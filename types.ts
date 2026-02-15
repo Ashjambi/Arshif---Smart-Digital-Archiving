@@ -29,7 +29,23 @@ export enum ArchiveStatus {
   IN_PROCESS = 'قيد المعاملة',
   CLOSED = 'مغلق',
   ARCHIVED = 'مؤرشف',
-  DESTRUCTION_CANDIDATE = 'مرشح للحذف'
+  DESTRUCTION_CANDIDATE = 'مرشح للحذف',
+  DESTROYED = 'تم الإتلاف'
+}
+
+export enum RetentionAction {
+  ARCHIVE = 'أرشفة دائمة',
+  DESTROY = 'إتلاف آمن',
+  REVIEW = 'مراجعة إدارية'
+}
+
+export interface RetentionPolicy {
+  id: string;
+  name: string; // e.g., "Financial Records - 7 Years"
+  description: string;
+  durationMonths: number;
+  action: RetentionAction;
+  targetDocTypes: DocumentType[];
 }
 
 export interface ISOMetadata {
@@ -42,11 +58,12 @@ export interface ISOMetadata {
   year: number;
   importance: Importance;
   confidentiality: Confidentiality;
-  retentionPolicy: string;
+  retentionPolicy: string; // Name of the applied policy
   expiryDate: string | null;
   status: ArchiveStatus;
   createdAt: string;
   updatedAt: string;
+  relatedFileIds?: string[]; // IDs of files identified as related
 }
 
 export interface FileRecord {
@@ -56,6 +73,7 @@ export interface FileRecord {
   type: string;
   lastModified: number;
   content?: string;
+  preview?: string; // Base64 thumbnail or truncated text content
   isoMetadata?: ISOMetadata;
   isProcessing: boolean;
 }

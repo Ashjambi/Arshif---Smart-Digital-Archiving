@@ -14,11 +14,12 @@ import {
   FolderOpen
 } from 'lucide-react';
 
+// Store component references instead of elements to allow dynamic prop passing (size, className)
 export const NAV_ITEMS = [
-  { id: 'dashboard', label: 'لوحة التحكم', icon: <Home size={20} /> },
-  { id: 'archive', label: 'الأرشيف الذكي', icon: <FolderOpen size={20} /> },
-  { id: 'agent', label: 'المساعد الذكي', icon: <MessageSquare size={20} /> },
-  { id: 'settings', label: 'الإعدادات', icon: <Settings size={20} /> },
+  { id: 'dashboard', label: 'لوحة التحكم', icon: Home },
+  { id: 'archive', label: 'الأرشيف الذكي', icon: FolderOpen },
+  { id: 'agent', label: 'المساعد الذكي', icon: MessageSquare },
+  { id: 'settings', label: 'الإعدادات', icon: Settings },
 ];
 
 export const STATUS_COLORS = {
