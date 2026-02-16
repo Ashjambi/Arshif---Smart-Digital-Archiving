@@ -1,13 +1,8 @@
-
 import { GoogleGenAI, Type, GenerateContentResponse } from "@google/genai";
 import { DocumentType, Importance, Confidentiality, ArchiveStatus, ISOMetadata } from "../types";
 
-// Initialize Gemini API with the provided key
 const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
 
-/**
- * Robust JSON extraction from model response.
- */
 const extractJson = (text: string) => {
   const cleaned = text.trim();
   try {
@@ -25,10 +20,6 @@ const extractJson = (text: string) => {
   }
 };
 
-/**
- * Helper function to retry promises with exponential backoff.
- * Useful for handling 503 "High Demand" errors from the API.
- */
 async function retryWithBackoff<T>(
   fn: () => Promise<T>,
   retries = 3,
@@ -38,14 +29,8 @@ async function retryWithBackoff<T>(
   try {
     return await fn();
   } catch (error: any) {
-    // Check for 503 status code or specific error messages related to load
-    const isOverloaded = 
-      error?.status === 503 || 
-      error?.code === 503 || 
-      (error?.message && error.message.includes('high demand'));
-
+    const isOverloaded = error?.status === 503 || error?.code === 503 || (error?.message && error.message.includes('high demand'));
     if (retries > 0 && isOverloaded) {
-      console.warn(`API overloaded (503), retrying in ${delay}ms... (${retries} attempts left)`);
       await new Promise(resolve => setTimeout(resolve, delay));
       return retryWithBackoff(fn, retries - 1, delay * factor, factor);
     }
@@ -59,29 +44,29 @@ export const classifyFileContent = async (
   otherFilesSummary: string = "",
   folderRelatedIds: string[] = []
 ): Promise<Partial<ISOMetadata>> => {
-  const fileExt = fileName.split('.').pop()?.toLowerCase() || '';
-  
-  const prompt = `أنت خبير أرشفة رقمية وفق معيار ISO 15489. حلل بيانات هذا الملف:
+  const prompt = `أنت خبير أرشفة رقمية محترف (ISO 15489). حلل هذا المستند واستخرج البيانات التالية بدقة من محتواه:
   - اسم الملف: ${fileName}
-  - النوع: ${fileExt}
-  - عينة المحتوى: ${content.substring(0, 1000)}
+  - المحتوى المستخرج: ${content.substring(0, 4000)}
   
-  السجلات الموجودة حالياً في الأرشيف (لإيجاد روابط إضافية):
-  ${otherFilesSummary}
+  المطلوب استخراج الحقول التالية (باللغة العربية):
+  1. sender: المرسل (الجهة أو الشخص المرسل)
+  2. recipient: إلى (المستلم الرئيسي)
+  3. cc: نسخة إلى (الجهات المذكورة للعلم)
+  4. title: موضوع المعاملة (ملخص دقيق جداً للمحتوى)
+  5. category: التصنيف الموضوعي (مثال: مالي، إداري، شؤون موظفين، فني)
+  6. documentType: نوع المعاملة (اختر من القائمة المتاحة)
+  7. incomingNumber: رقم القيد أو الوارد المكتوب على الخطاب
+  8. outgoingNumber: رقم الصادر المكتوب على الخطاب (إن وجد)
+  9. description: وصف موجز للسياق الإداري
+  10. importance: الأهمية (عادي، مهم، عالي الأهمية، حرج)
+  11. confidentiality: السرية (عام، داخلي، سري، سري للغاية)
 
-  **معلومات هيكلية هامة:**
-  يوجد هذا الملف في نفس المجلد مع الملفات التالية (معرفاتها): ${JSON.stringify(folderRelatedIds)}.
-  يجب عليك تضمين هذه المعرفات في قائمة relatedFileIds بشكل تلقائي لأنها مرتبطة هيكلياً.
-  
-  المطلوب:
-  استخرج البيانات بدقة بصيغة JSON. 
-  في حقل relatedFileIds، قم بدمج:
-  1. المعرفات الهيكلية المذكورة أعلاه (${JSON.stringify(folderRelatedIds)}).
-  2. أي معرفات لسجلات أخرى من "قائمة السجلات الموجودة" إذا اكتشفت علاقة منطقية أو دلالية (Semantic Link) في المحتوى (مثلاً: فاتورة تشير إلى رقم عقد موجود في مجلد آخر).`;
+  قارن مع سياق الأرشيف المتاح لإيجاد أي روابط منطقية:
+  ${otherFilesSummary}`;
 
   try {
     const response = await retryWithBackoff<GenerateContentResponse>(() => ai.models.generateContent({
-      model: "gemini-3-flash-preview",
+      model: "gemini-3-pro-preview",
       contents: prompt,
       config: {
         responseMimeType: "application/json",
@@ -90,65 +75,53 @@ export const classifyFileContent = async (
           properties: {
             title: { type: Type.STRING },
             description: { type: Type.STRING },
-            documentType: { type: Type.STRING, enum: Object.values(DocumentType) },
+            sender: { type: Type.STRING },
+            recipient: { type: Type.STRING },
+            cc: { type: Type.STRING },
+            category: { type: Type.STRING },
+            incomingNumber: { type: Type.STRING },
+            outgoingNumber: { type: Type.STRING },
+            documentType: { type: Type.STRING },
             entity: { type: Type.STRING },
             year: { type: Type.NUMBER },
-            importance: { type: Type.STRING, enum: Object.values(Importance) },
-            confidentiality: { type: Type.STRING, enum: Object.values(Confidentiality) },
-            retentionPolicy: { type: Type.STRING },
-            expiryDate: { type: Type.STRING },
-            relatedFileIds: { 
-              type: Type.ARRAY, 
-              items: { type: Type.STRING },
-              description: "قائمة بمعرفات السجلات المرتبطة (الهيكلية والدلالية)"
-            }
+            importance: { type: Type.STRING },
+            confidentiality: { type: Type.STRING },
           },
-          required: ["title", "documentType", "entity", "importance", "confidentiality"],
+          required: ["title", "documentType", "importance", "confidentiality"],
         }
       }
     }));
-
     const result = extractJson(response.text || "{}");
-    
-    return {
-      ...result,
-      status: ArchiveStatus.ACTIVE,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    };
+    return { ...result, status: ArchiveStatus.ACTIVE, createdAt: new Date().toISOString() };
   } catch (error) {
-    console.error("Gemini classification failed:", error);
-    return {
-      title: fileName,
-      description: "تعذر التحليل العميق بسبب انشغال الخدمة مؤقتاً.",
-      documentType: DocumentType.OTHER,
-      entity: "غير محدد",
-      importance: Importance.NORMAL,
-      confidentiality: Confidentiality.INTERNAL,
-      status: ArchiveStatus.ACTIVE,
-      relatedFileIds: folderRelatedIds // Ensure structural links are preserved even on error
-    };
+    return { title: fileName, documentType: DocumentType.OTHER };
   }
 };
 
-export const askAgent = async (query: string, filesContext: string): Promise<string> => {
-  const prompt = `أنت الوكيل الذكي لنظام "أرشيف". أنت خبير في معايير ISO 15489.
-  تعامل مع قاعدة البيانات المحلية المتاحة في السياق أدناه للإجابة على استفسار المستخدم.
+export const askAgent = async (query: string, filesContext: string, currentFileText?: string): Promise<string> => {
+  const prompt = `أنت "خبير الأرشفة الاستراتيجي"، وكيل ذكي ملم بمعايير ISO 15489 وإجراءات الحوكمة الرقمية. لديك ذاكرة قوية تمكنك من الربط بين المعاملات بناءً على أرقامها ومواضيعها.
   
-  السياق المتاح:
+  السياق المتاح من الأرشيف:
   ${filesContext}
   
-  استعلام المستخدم:
-  ${query}`;
+  ${currentFileText ? `سياق المستند الذي يناقشه المستخدم حالياً: \n${currentFileText}` : "لا يوجد مستند محدد مفتوح حالياً."}
+
+  تعليمات الرد الاحترافي:
+  1. كن رسمياً، دقيقاً، واستخدم مصطلحات إدارية فصحى.
+  2. ابحث في "رقم الوارد" و "رقم الصادر" و "الموضوع" للإجابة عن الاستفسارات.
+  3. اربط المستندات ببعضها (مثال: "بالإشارة إلى الخطاب الوارد رقم...، يتبين أن هذه المعاملة مرتبطة بـ...").
+  4. استدل بنصوص مباشرة من محتوى المستندات (OCR) لتعزيز موثوقية إجابتك.
+  5. اقترح تصنيفات أو سياسات حفظ إذا شعرت بوجود خلل في الأرشفة.
+
+  استعلام المستخدم: ${query}`;
 
   try {
     const response = await retryWithBackoff<GenerateContentResponse>(() => ai.models.generateContent({
-      model: "gemini-3-flash-preview",
+      model: "gemini-3-pro-preview",
       contents: prompt,
     }));
-    return response.text || "عذراً، لم أتمكن من استخراج إجابة دقيقة حالياً.";
+    return response.text || "عذراً، لم أتمكن من صياغة إجابة دقيقة حالياً.";
   } catch (error) {
-    console.error("Agent interaction failed:", error);
-    return "نعتذر، الخادم مشغول حالياً. يرجى المحاولة مرة أخرى بعد قليل.";
+    return "نعتذر، واجهنا مشكلة تقنية في محرك الذكاء الاصطناعي. يرجى المحاولة لاحقاً.";
   }
 };

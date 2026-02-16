@@ -55,6 +55,12 @@ export interface ISOMetadata {
   description: string;
   documentType: DocumentType;
   entity: string;
+  sender?: string;         // المرسل
+  recipient?: string;      // إلى
+  cc?: string;             // نسخة إلى
+  category?: string;       // التصنيف
+  incomingNumber?: string; // رقم الوارد
+  outgoingNumber?: string; // رقم الصادر
   year: number;
   importance: Importance;
   confidentiality: Confidentiality;
@@ -64,6 +70,7 @@ export interface ISOMetadata {
   createdAt: string;
   updatedAt: string;
   relatedFileIds?: string[]; // IDs of files identified as related
+  ocrStatus?: 'pending' | 'completed' | 'failed' | 'skipped'; // New field for OCR status
 }
 
 export interface FileRecord {
@@ -76,6 +83,7 @@ export interface FileRecord {
   preview?: string; // Base64 thumbnail or truncated text content
   isoMetadata?: ISOMetadata;
   isProcessing: boolean;
+  extractedText?: string; // Content extracted via OCR or Mammoth
 }
 
 export interface ChatMessage {
@@ -84,4 +92,24 @@ export interface ChatMessage {
   text: string;
   timestamp: Date;
   relatedFiles?: string[]; // IDs of referenced records
+}
+
+// New Interfaces for Audit
+export enum AuditAction {
+  VIEW = 'عرض سجل',
+  CREATE = 'إضافة سجل',
+  UPDATE = 'تعديل بيانات',
+  DELETE = 'حذف سجل',
+  POLICY_CHANGE = 'تغيير سياسة',
+  SYSTEM_LOGIN = 'دخول النظام',
+  SYNC = 'مزامنة ملفات'
+}
+
+export interface AuditLog {
+  id: string;
+  action: AuditAction;
+  details: string;
+  user: string;
+  timestamp: string;
+  resourceId?: string;
 }
