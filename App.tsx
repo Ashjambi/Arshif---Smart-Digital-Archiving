@@ -1,3 +1,4 @@
+
 import React, { useState, useCallback, useMemo, useEffect, useRef } from 'react';
 import { 
   FileText, 
@@ -67,7 +68,9 @@ import {
   Briefcase,
   MessageSquare,
   FileSignature,
-  Stamp
+  Stamp,
+  ArrowLeftRight,
+  FileBadge
 } from 'lucide-react';
 // @ts-ignore
 import mammoth from 'mammoth';
@@ -116,11 +119,11 @@ const DEFAULT_POLICIES: RetentionPolicy[] = [
 
 const getFileIcon = (fileName: string) => {
   const ext = fileName.split('.').pop()?.toLowerCase();
-  if (['jpg', 'jpeg', 'png', 'gif', 'svg', 'webp', 'heic'].includes(ext || '')) return <FileImage size={20} className="text-pink-500" />;
-  if (['xlsx', 'xls', 'csv'].includes(ext || '')) return <FileSpreadsheet size={20} className="text-emerald-500" />;
-  if (['doc', 'docx'].includes(ext || '')) return <FileText size={20} className="text-blue-500" />;
-  if (['pdf'].includes(ext || '')) return <FileBox size={20} className="text-red-500" />;
-  return <FileText size={20} className="text-slate-400" />;
+  if (['jpg', 'jpeg', 'png', 'gif', 'svg', 'webp', 'heic'].includes(ext || '')) return <FileImage size={24} className="text-pink-500" />;
+  if (['xlsx', 'xls', 'csv'].includes(ext || '')) return <FileSpreadsheet size={24} className="text-emerald-500" />;
+  if (['doc', 'docx'].includes(ext || '')) return <FileText size={24} className="text-blue-500" />;
+  if (['pdf'].includes(ext || '')) return <FileBox size={24} className="text-red-500" />;
+  return <FileText size={24} className="text-slate-400" />;
 };
 
 const SidebarSection = ({ title, icon: Icon, children }: { title: string, icon: any, children?: React.ReactNode }) => (
@@ -134,16 +137,16 @@ const SidebarSection = ({ title, icon: Icon, children }: { title: string, icon: 
 );
 
 const DetailCard = ({ label, value, icon: Icon, colorClass = "text-indigo-600" }: { label: string, value?: string | number, icon: any, colorClass?: string }) => (
-  <div className="bg-white p-5 rounded-3xl border border-slate-100 shadow-sm hover:shadow-md hover:border-indigo-100 transition-all group">
-    <div className="flex items-center gap-4">
-      <div className={`p-3 rounded-2xl bg-slate-50 group-hover:bg-indigo-50 transition-colors ${colorClass}`}>
-        <Icon size={20} />
+  <div className="bg-white p-6 rounded-[2rem] border border-slate-100 shadow-sm hover:shadow-md hover:border-indigo-100 transition-all group flex flex-col h-full">
+    <div className="flex items-center gap-3 mb-3">
+      <div className={`p-2.5 rounded-xl bg-slate-50 group-hover:bg-indigo-50 transition-colors ${colorClass}`}>
+        <Icon size={18} />
       </div>
-      <div className="min-w-0 flex-1">
-        <p className="text-[10px] text-slate-400 font-bold mb-1 uppercase tracking-widest">{label}</p>
-        <p className="text-slate-800 text-sm font-black leading-tight break-words">{value || 'غير محدد'}</p>
-      </div>
+      <p className="text-[10px] text-slate-400 font-black uppercase tracking-[0.1em]">{label}</p>
     </div>
+    <p className="text-slate-800 text-sm font-bold leading-relaxed break-words whitespace-normal text-wrap flex-1">
+      {value || 'غير محدد'}
+    </p>
   </div>
 );
 
@@ -266,7 +269,7 @@ const App: React.FC = () => {
       <aside className="w-80 bg-slate-900 text-slate-300 flex flex-col fixed h-full z-20 shadow-2xl">
         <div className="p-8">
           <div className="flex items-center gap-4 mb-16 group cursor-pointer" onClick={() => setActiveTab('dashboard')}>
-            <div className="bg-indigo-600 w-12 h-12 rounded-2xl flex items-center justify-center text-white font-black text-2xl group-hover:scale-110 transition-transform">أ</div>
+            <div className="bg-indigo-600 w-12 h-12 rounded-2xl flex items-center justify-center text-white font-black text-2xl group-hover:scale-110 transition-transform shadow-lg shadow-indigo-500/20">أ</div>
             <span className="text-2xl font-black text-white tracking-tighter">أرشـيـف</span>
           </div>
           <SidebarSection title="النظام" icon={LayoutDashboard}>
@@ -286,9 +289,9 @@ const App: React.FC = () => {
             <header className="flex justify-between items-end bg-white p-10 rounded-[3rem] border border-slate-100 shadow-xl">
               <div>
                 <h1 className="text-5xl font-black text-slate-900 tracking-tight">الأرشفة الذكية</h1>
-                <p className="text-slate-500 mt-2 font-bold text-lg">تحليل ومعالجة المستندات بمعايير الجودة العالمية</p>
+                <p className="text-slate-500 mt-2 font-bold text-lg">تحليل وفهرسة السجلات بمعايير ISO 15489</p>
               </div>
-              <label className="bg-slate-900 text-white px-10 py-5 rounded-2xl flex items-center gap-3 cursor-pointer shadow-xl font-black hover:bg-black transition-all">
+              <label className="bg-slate-900 text-white px-10 py-5 rounded-2xl flex items-center gap-3 cursor-pointer shadow-xl font-black hover:bg-black transition-all hover:-translate-y-1">
                 <FolderPlus size={22} /> أرشفة مجلد جديد
                 <input type="file" multiple webkitdirectory="" className="hidden" onChange={handleManualUpload} />
               </label>
@@ -297,14 +300,14 @@ const App: React.FC = () => {
             {scanProgress.status !== 'idle' && (
               <div className="bg-slate-900 text-white p-10 rounded-[3rem] shadow-2xl">
                 <div className="flex items-center gap-6 mb-6">
-                  <div className="bg-indigo-600 p-4 rounded-2xl animate-spin"><RefreshCw size={24} /></div>
+                  <div className="bg-indigo-600 p-4 rounded-2xl animate-spin shadow-lg"><RefreshCw size={24} /></div>
                   <div className="flex-1">
                     <span className="font-black text-2xl block mb-1">جاري معالجة: {scanProgress.currentFile}</span>
-                    <span className="text-indigo-400 text-sm font-bold">تطبيق الذكاء الاصطناعي لفهرسة المستند</span>
+                    <span className="text-indigo-400 text-sm font-bold opacity-80 uppercase tracking-widest">تحليل ذكي عميق للمحتوى</span>
                   </div>
                 </div>
                 <div className="w-full h-4 bg-white/10 rounded-full overflow-hidden">
-                  <div className="h-full bg-indigo-500 transition-all duration-500" style={{ width: `${(scanProgress.current / scanProgress.total) * 100}%` }}></div>
+                  <div className="h-full bg-indigo-500 transition-all duration-500 shadow-[0_0_15px_rgba(99,102,241,0.5)]" style={{ width: `${(scanProgress.current / scanProgress.total) * 100}%` }}></div>
                 </div>
               </div>
             )}
@@ -316,9 +319,9 @@ const App: React.FC = () => {
                 { label: 'سجلات نشطة', value: files.filter(f => f.isoMetadata?.status === ArchiveStatus.ACTIVE).length, icon: <CheckCircle2 className="text-emerald-600"/> },
                 { label: 'عمليات النظام', value: auditLogs.length, icon: <Activity className="text-rose-600"/> },
               ].map((s, i) => (
-                <div key={i} className="bg-white p-8 rounded-[2.5rem] border border-slate-100 flex items-center justify-between shadow-sm hover:shadow-xl transition-all group">
-                  <div><p className="text-xs text-slate-400 font-black mb-1 uppercase group-hover:text-indigo-400 transition-colors">{s.label}</p><h3 className="text-4xl font-black text-slate-800">{s.value}</h3></div>
-                  <div className="bg-slate-50 p-5 rounded-3xl">{s.icon}</div>
+                <div key={i} className="bg-white p-8 rounded-[2.5rem] border border-slate-100 flex items-center justify-between shadow-sm hover:shadow-xl transition-all group cursor-default">
+                  <div><p className="text-[10px] text-slate-400 font-black mb-1 uppercase tracking-widest group-hover:text-indigo-400 transition-colors">{s.label}</p><h3 className="text-4xl font-black text-slate-800">{s.value}</h3></div>
+                  <div className="bg-slate-50 p-5 rounded-3xl group-hover:scale-110 transition-transform">{s.icon}</div>
                 </div>
               ))}
             </div>
@@ -330,11 +333,11 @@ const App: React.FC = () => {
             <header className="flex justify-between items-center bg-white p-10 rounded-[3rem] border border-slate-100 shadow-xl">
               <div>
                 <h1 className="text-4xl font-black text-slate-900 tracking-tight">الأرشيف المركزي</h1>
-                <p className="text-slate-500 mt-2 font-medium">حوكمة الوثائق والمراسلات</p>
+                <p className="text-slate-500 mt-2 font-medium">حوكمة الوثائق والمراسلات الإدارية</p>
               </div>
               <div className="flex gap-3">
-                <button onClick={() => setViewMode('grid')} className={`p-4 rounded-2xl ${viewMode === 'grid' ? 'bg-indigo-600 text-white' : 'bg-slate-50'}`}><LayoutGrid size={22}/></button>
-                <button onClick={() => setViewMode('list')} className={`p-4 rounded-2xl ${viewMode === 'list' ? 'bg-indigo-600 text-white' : 'bg-slate-50'}`}><ListIcon size={22}/></button>
+                <button onClick={() => setViewMode('grid')} className={`p-4 rounded-2xl transition-all ${viewMode === 'grid' ? 'bg-indigo-600 text-white shadow-lg' : 'bg-slate-50 text-slate-400 hover:bg-slate-100'}`}><LayoutGrid size={22}/></button>
+                <button onClick={() => setViewMode('list')} className={`p-4 rounded-2xl transition-all ${viewMode === 'list' ? 'bg-indigo-600 text-white shadow-lg' : 'bg-slate-50 text-slate-400 hover:bg-slate-100'}`}><ListIcon size={22}/></button>
               </div>
             </header>
 
@@ -345,18 +348,19 @@ const App: React.FC = () => {
               </div>
             </div>
 
-            <div className={viewMode === 'grid' ? "grid grid-cols-1 md:grid-cols-3 gap-8" : "space-y-4"}>
+            <div className={viewMode === 'grid' ? "grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8" : "space-y-4"}>
               {filteredFiles.map(f => (
-                <div key={f.id} onClick={() => setSelectedFile(f)} className="bg-white border border-slate-100 rounded-[2.5rem] p-8 hover:shadow-2xl transition-all cursor-pointer group relative">
+                <div key={f.id} onClick={() => setSelectedFile(f)} className="bg-white border border-slate-100 rounded-[2.5rem] p-8 hover:shadow-2xl transition-all cursor-pointer group relative overflow-hidden">
+                  <div className={`absolute top-0 right-0 w-2 h-full ${STATUS_COLORS[f.isoMetadata?.status as keyof typeof STATUS_COLORS]?.split(' ')[0] || 'bg-slate-200'}`} />
                   <div className="flex items-center gap-4 mb-6">
                     <div className="bg-slate-50 p-4 rounded-2xl text-slate-500 group-hover:bg-indigo-600 group-hover:text-white transition-all shadow-sm">{getFileIcon(f.name)}</div>
                     <div className="min-w-0 flex-1">
                       <h3 className="font-black text-slate-800 text-lg truncate group-hover:text-indigo-600 transition-colors">{f.isoMetadata?.title || f.name}</h3>
-                      <span className="text-[10px] font-black text-slate-400 block mt-1">رقم: {f.isoMetadata?.incomingNumber || 'بدون رقم'}</span>
+                      <span className="text-[10px] font-black text-slate-400 block mt-1 tracking-widest uppercase">رقم: {f.isoMetadata?.incomingNumber || 'غير محدد'}</span>
                     </div>
                   </div>
                   <div className="flex items-center justify-between mt-6 pt-6 border-t border-slate-50">
-                    <span className="bg-slate-50 text-slate-600 px-3 py-1.5 rounded-xl text-[10px] font-black">{f.isoMetadata?.documentType}</span>
+                    <span className="bg-slate-50 text-slate-600 px-3 py-1.5 rounded-xl text-[10px] font-black border border-slate-100/50 uppercase">{f.isoMetadata?.documentType}</span>
                     <ArrowRight size={18} className="text-slate-300 group-hover:translate-x-[-4px] transition-transform" />
                   </div>
                 </div>
@@ -368,27 +372,27 @@ const App: React.FC = () => {
         {activeTab === 'agent' && (
           <div className="h-full flex flex-col space-y-6 animate-in fade-in duration-700">
             <div className="h-[calc(100vh-160px)] flex flex-col bg-white rounded-[3rem] border border-slate-100 shadow-2xl overflow-hidden">
-              <div className="p-10 border-b border-slate-100 bg-slate-50/30 flex justify-between items-center">
+              <div className="p-10 border-b border-slate-100 bg-slate-50/30 flex justify-between items-center shrink-0">
                 <div>
                   <h2 className="text-3xl font-black text-slate-900 tracking-tight">المساعد الاستراتيجي</h2>
-                  <p className="text-slate-500 font-bold mt-1">تحليل المعاملات وربط السياقات الإدارية</p>
+                  <p className="text-slate-500 font-bold mt-1">تحليل المعاملات وتوضيح السياق الإداري والبحثي</p>
                 </div>
-                <div className="bg-indigo-100 p-5 rounded-[2rem] text-indigo-600"><Bot size={36} /></div>
+                <div className="bg-indigo-100 p-5 rounded-[2rem] text-indigo-600 shadow-inner shadow-indigo-200/50"><Bot size={36} /></div>
               </div>
-              <div className="flex-1 overflow-y-auto p-10 space-y-8 custom-scrollbar">
+              <div className="flex-1 overflow-y-auto p-10 space-y-8 custom-scrollbar bg-white">
                 {messages.map(m => (
                   <div key={m.id} className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                    <div className={`max-w-[75%] p-8 rounded-[2.5rem] shadow-sm text-lg leading-relaxed ${m.role === 'user' ? 'bg-slate-900 text-white rounded-tr-none' : 'bg-white border border-slate-100 rounded-tl-none text-slate-800 font-bold'}`}>
+                    <div className={`max-w-[75%] p-8 rounded-[2.5rem] shadow-sm text-lg leading-relaxed ${m.role === 'user' ? 'bg-slate-900 text-white rounded-tr-none' : 'bg-slate-50 border border-slate-100 rounded-tl-none text-slate-800 font-bold'}`}>
                       <p className="whitespace-pre-wrap">{m.text}</p>
                     </div>
                   </div>
                 ))}
-                {isChatLoading && <div className="text-indigo-600 font-black animate-pulse flex items-center gap-2 px-4"><Loader2 className="animate-spin" size={20}/> جاري التحليل المعمق...</div>}
+                {isChatLoading && <div className="text-indigo-600 font-black animate-pulse flex items-center gap-3 px-4"><div className="w-2 h-2 bg-indigo-600 rounded-full animate-bounce"/><div className="w-2 h-2 bg-indigo-600 rounded-full animate-bounce [animation-delay:0.2s]"/><div className="w-2 h-2 bg-indigo-600 rounded-full animate-bounce [animation-delay:0.4s]"/> جاري التحليل...</div>}
               </div>
-              <div className="p-8 bg-slate-50/50 border-t border-slate-100">
+              <div className="p-8 bg-slate-50/50 border-t border-slate-100 shrink-0">
                 <div className="flex gap-4 bg-white p-3 rounded-[1.5rem] border border-slate-200 shadow-inner focus-within:ring-4 ring-indigo-500/10 transition-all">
-                  <input type="text" className="flex-1 bg-transparent px-6 py-4 outline-none font-bold text-slate-800 text-lg" placeholder="اسأل عن مستند أو اطلب تحليل سياق..." value={chatInput} onChange={e => setChatInput(e.target.value)} onKeyDown={e => e.key === 'Enter' && handleSendMessage()} />
-                  <button onClick={() => handleSendMessage()} className="bg-indigo-600 text-white px-8 py-4 rounded-xl shadow-lg hover:bg-indigo-700 transition-all font-black flex items-center gap-2"><Send size={20}/> إرسال</button>
+                  <input type="text" className="flex-1 bg-transparent px-6 py-4 outline-none font-bold text-slate-800 text-lg" placeholder="اسأل عن مستند، ابحث عن معاملة، أو اطلب ملخصاً..." value={chatInput} onChange={e => setChatInput(e.target.value)} onKeyDown={e => e.key === 'Enter' && handleSendMessage()} />
+                  <button onClick={() => handleSendMessage()} className="bg-indigo-600 text-white px-8 py-4 rounded-xl shadow-lg hover:bg-black transition-all font-black flex items-center gap-2 active:scale-95"><Send size={20}/> إرسال</button>
                 </div>
               </div>
             </div>
@@ -396,116 +400,125 @@ const App: React.FC = () => {
         )}
       </main>
 
-      {/* REFINED PROFESSIONAL DETAIL MODAL */}
+      {/* PROFESSIONAL DETAIL MODAL - REFINED VERSION */}
       {selectedFile && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-6 md:p-12 bg-slate-900/95 backdrop-blur-2xl animate-in fade-in duration-300">
-          <div className="bg-white w-full max-w-6xl h-full max-h-[92vh] rounded-[3.5rem] shadow-[0_60px_200px_rgba(0,0,0,0.9)] overflow-hidden flex flex-col border border-white/20 animate-in slide-in-from-bottom-12 duration-700 relative">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 md:p-12 bg-slate-900/95 backdrop-blur-2xl animate-in fade-in duration-300">
+          <div className="bg-white w-full max-w-6xl h-full max-h-[92vh] rounded-[3.5rem] shadow-[0_60px_200px_rgba(0,0,0,0.9)] overflow-hidden flex flex-col border border-white/20 animate-in slide-in-from-bottom-12 duration-700">
             
-            {/* Modal Header */}
-            <div className="p-8 md:p-10 border-b border-slate-100 flex justify-between items-center bg-slate-50/20 shrink-0">
+            {/* Modal Header - Refined Typography */}
+            <div className="p-10 border-b border-slate-100 flex justify-between items-center bg-slate-50/20 shrink-0">
               <div className="flex items-center gap-8 min-w-0 flex-1">
-                <div className="bg-indigo-600 p-6 rounded-3xl text-white shadow-2xl border-4 border-white shrink-0">
+                <div className="bg-indigo-600 p-6 rounded-3xl text-white shadow-2xl border-4 border-white shrink-0 shadow-indigo-500/20">
                   {getFileIcon(selectedFile.name)}
                 </div>
                 <div className="min-w-0 flex-1 pr-2">
-                  <h3 className="text-3xl md:text-4xl font-black text-slate-900 tracking-tight leading-[1.2] whitespace-normal break-words text-wrap">
+                  <h3 className="text-3xl md:text-4xl font-black text-slate-900 tracking-tight leading-[1.3] whitespace-normal break-words text-wrap overflow-visible">
                     {selectedFile.isoMetadata?.title || selectedFile.name}
                   </h3>
-                  <div className="flex flex-wrap items-center gap-4 mt-4">
-                    <span className="bg-indigo-50 text-indigo-700 px-4 py-2 rounded-2xl text-[12px] font-black border border-indigo-100 shadow-sm">
-                      رقم القيد: {selectedFile.isoMetadata?.recordId}
+                  <div className="flex flex-wrap items-center gap-4 mt-5">
+                    <span className="bg-indigo-50 text-indigo-700 px-5 py-2 rounded-2xl text-[12px] font-black border border-indigo-100 shadow-sm flex items-center gap-2">
+                      <Hash size={14} /> رقم القيد: {selectedFile.isoMetadata?.recordId}
                     </span>
-                    <span className="bg-slate-100 text-slate-600 px-4 py-2 rounded-2xl text-[12px] font-black border border-slate-200">
-                      نوع المعاملة: {selectedFile.isoMetadata?.documentType}
+                    <span className="bg-slate-100 text-slate-600 px-5 py-2 rounded-2xl text-[12px] font-black border border-slate-200 flex items-center gap-2">
+                      <FileBadge size={14} /> نوع المعاملة: {selectedFile.isoMetadata?.documentType}
                     </span>
                   </div>
                 </div>
               </div>
-              <div className="flex gap-4 shrink-0 self-start mt-2">
-                <button onClick={() => setSelectedFile(null)} className="p-4 bg-rose-50 text-rose-600 rounded-2xl hover:bg-rose-100 transition-colors shadow-sm">
-                  <X size={32}/>
+              <div className="flex gap-4 shrink-0 self-start">
+                <button onClick={() => setSelectedFile(null)} className="p-4 bg-rose-50 text-rose-600 rounded-2xl hover:bg-rose-100 transition-colors shadow-sm group">
+                  <X size={32} className="group-hover:rotate-90 transition-transform duration-300"/>
                 </button>
               </div>
             </div>
             
-            {/* Modal Body: Focus on Professional Data & Summary */}
-            <div className="flex-1 overflow-y-auto p-8 md:p-12 custom-scrollbar bg-white">
-              <div className="space-y-12">
+            {/* Modal Body: High Resolution Detail View */}
+            <div className="flex-1 overflow-y-auto p-10 md:p-14 custom-scrollbar bg-white">
+              <div className="max-w-5xl mx-auto space-y-16">
                 
-                {/* 1. Executive Summary (The Highlight Section) */}
-                <section className="relative p-1 bg-gradient-to-br from-indigo-500 to-indigo-700 rounded-[3.5rem] shadow-2xl">
-                  <div className="bg-white p-10 md:p-12 rounded-[3.4rem] overflow-hidden relative">
-                    <div className="absolute top-0 left-0 p-8 opacity-5">
-                       <Sparkles size={120} className="text-indigo-600" />
+                {/* 1. Executive Summary - The Heart of the Analysis */}
+                <section className="relative">
+                  <div className="absolute -inset-2 bg-gradient-to-br from-indigo-500/20 to-indigo-700/20 rounded-[4rem] blur-xl opacity-50"></div>
+                  <div className="relative bg-white p-12 md:p-14 rounded-[3.5rem] border border-indigo-100 shadow-[0_20px_50px_rgba(99,102,241,0.08)] overflow-hidden">
+                    <div className="absolute top-0 left-0 p-10 opacity-[0.03] pointer-events-none">
+                       <Sparkles size={240} className="text-indigo-600" />
                     </div>
-                    <div className="flex items-center gap-4 mb-8">
-                      <div className="p-3 bg-indigo-50 rounded-2xl text-indigo-600">
-                        <FileSignature size={28} />
+                    <div className="flex items-center gap-5 mb-10">
+                      <div className="p-4 bg-indigo-600 rounded-[1.5rem] text-white shadow-lg shadow-indigo-600/30">
+                        <FileSignature size={32} />
                       </div>
-                      <h4 className="text-2xl font-black text-slate-900 tracking-tight">الملخص التنفيذي للمستند</h4>
+                      <div>
+                        <h4 className="text-3xl font-black text-slate-900 tracking-tight">الملخص التنفيذي الذكي</h4>
+                        <p className="text-indigo-500 font-bold text-sm uppercase tracking-widest mt-1">نتائج معالجة الذكاء الاصطناعي</p>
+                      </div>
                     </div>
-                    <div className="text-xl md:text-2xl font-bold text-slate-800 leading-[1.8] text-right break-words whitespace-pre-wrap">
-                      {selectedFile.isoMetadata?.description}
+                    
+                    <div className="text-2xl md:text-3xl font-bold text-slate-800 leading-[1.8] text-right break-words whitespace-pre-wrap drop-shadow-sm">
+                      {selectedFile.isoMetadata?.description || 'جاري استخراج الملخص التنفيذي...'}
                     </div>
-                    <div className="mt-8 pt-8 border-t border-slate-100 flex items-center justify-between">
-                       <div className="flex items-center gap-3">
-                          <Bot size={20} className="text-indigo-600" />
-                          <span className="text-xs font-black text-slate-400 uppercase tracking-widest">تحليل ذكي بواسطة Arshif-GPT</span>
+
+                    <div className="mt-12 pt-10 border-t border-slate-100 flex flex-wrap items-center justify-between gap-6">
+                       <div className="flex items-center gap-4">
+                          <div className="bg-indigo-50 p-2 rounded-lg text-indigo-600"><Bot size={22} /></div>
+                          <div>
+                            <span className="text-xs font-black text-slate-400 uppercase tracking-[0.2em] block">المحرك النشط</span>
+                            <span className="text-sm font-bold text-slate-800">Arshif Strategist Agent v2.5</span>
+                          </div>
                        </div>
-                       <button onClick={() => discussFile(selectedFile)} className="bg-indigo-600 text-white px-8 py-4 rounded-2xl font-black text-sm flex items-center gap-3 hover:bg-black transition-all shadow-xl shadow-indigo-500/20 active:scale-95">
-                          <MessageSquare size={18} /> مناقشة هذا الملخص
+                       <button onClick={() => discussFile(selectedFile)} className="bg-slate-900 text-white px-10 py-5 rounded-2xl font-black text-lg flex items-center gap-4 hover:bg-black transition-all shadow-2xl hover:scale-105 active:scale-95">
+                          <MessageSquare size={22} /> ناقش هذا التحليل مع المساعد
                        </button>
                     </div>
                   </div>
                 </section>
 
-                {/* 2. Correspondence Professional Details Grid */}
+                {/* 2. Professional Correspondence Grid - BEAUTIFUL CARDS */}
                 <section>
-                   <div className="flex items-center gap-4 mb-8">
-                      <div className="p-2 bg-slate-50 rounded-xl text-slate-400">
-                        <Layers size={22} />
+                   <div className="flex items-center gap-5 mb-10">
+                      <div className="p-3 bg-slate-100 rounded-2xl text-slate-600">
+                        <Layers size={24} />
                       </div>
-                      <h4 className="text-xl font-black text-slate-900 tracking-tight">معلومات المراسلة التفصيلية</h4>
+                      <h4 className="text-2xl font-black text-slate-900 tracking-tight">بيانات المراسلة والحوكمة</h4>
                    </div>
-                   <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                      <DetailCard label="المرسل (الجهة المصدرة)" value={selectedFile.isoMetadata?.sender} icon={User} />
-                      <DetailCard label="إلى (المستلم الرئيسي)" value={selectedFile.isoMetadata?.recipient} icon={UserCheck} />
-                      <DetailCard label="نسخة إلى (CC)" value={selectedFile.isoMetadata?.cc} icon={Users} colorClass="text-slate-500" />
-                      <DetailCard label="التصنيف الإداري" value={selectedFile.isoMetadata?.category} icon={Tag} colorClass="text-amber-600" />
-                      <DetailCard label="رقم القيد / الصادر" value={selectedFile.isoMetadata?.outgoingNumber || selectedFile.isoMetadata?.incomingNumber} icon={Hash} colorClass="text-emerald-600" />
-                      <DetailCard label="تاريخ الأرشفة" value={new Date(selectedFile.isoMetadata?.createdAt || '').toLocaleDateString('ar-SA')} icon={Calendar} colorClass="text-rose-600" />
+                   <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
+                      <DetailCard label="الجهة المصدرة / المرسل" value={selectedFile.isoMetadata?.sender} icon={User} />
+                      <DetailCard label="المستلم الرئيسي (إلى)" value={selectedFile.isoMetadata?.recipient} icon={UserCheck} />
+                      <DetailCard label="نسخة للعلم (CC)" value={selectedFile.isoMetadata?.cc} icon={Users} colorClass="text-slate-500" />
+                      <DetailCard label="التصنيف الموضوعي" value={selectedFile.isoMetadata?.category} icon={Tag} colorClass="text-amber-600" />
+                      <DetailCard label="رقم القيد / الصادر" value={selectedFile.isoMetadata?.outgoingNumber || selectedFile.isoMetadata?.incomingNumber || 'لا يوجد'} icon={Hash} colorClass="text-emerald-600" />
+                      <DetailCard label="التبعية التنظيمية" value={selectedFile.isoMetadata?.entity || 'غير محدد'} icon={Briefcase} colorClass="text-blue-600" />
                    </div>
                 </section>
 
-                {/* 3. Governance & Metadata Section */}
-                <section className="bg-slate-50/50 p-10 rounded-[3rem] border border-slate-100">
-                   <div className="grid grid-cols-2 md:grid-cols-4 gap-8">
-                      <div>
-                        <p className="text-[10px] text-slate-400 font-bold mb-2 uppercase tracking-widest">السرية</p>
-                        <div className="flex items-center gap-2">
-                           <Shield size={16} className="text-indigo-600" />
-                           <span className="text-sm font-black text-slate-800">{selectedFile.isoMetadata?.confidentiality}</span>
+                {/* 3. Status & Lifecycle Metadata */}
+                <section className="bg-slate-50/70 p-12 rounded-[3.5rem] border border-slate-200/50 shadow-inner">
+                   <div className="grid grid-cols-2 md:grid-cols-4 gap-12">
+                      <div className="space-y-3">
+                        <p className="text-[10px] text-slate-400 font-black mb-1 uppercase tracking-widest">تصنيف السرية</p>
+                        <div className="flex items-center gap-3">
+                           <Shield size={20} className="text-indigo-600" />
+                           <span className="text-lg font-black text-slate-800">{selectedFile.isoMetadata?.confidentiality}</span>
                         </div>
                       </div>
-                      <div>
-                        <p className="text-[10px] text-slate-400 font-bold mb-2 uppercase tracking-widest">الأهمية</p>
-                        <div className="flex items-center gap-2">
-                           <AlertCircle size={16} className="text-orange-600" />
-                           <span className="text-sm font-black text-slate-800">{selectedFile.isoMetadata?.importance}</span>
+                      <div className="space-y-3">
+                        <p className="text-[10px] text-slate-400 font-black mb-1 uppercase tracking-widest">مستوى الأهمية</p>
+                        <div className="flex items-center gap-3">
+                           <AlertCircle size={20} className="text-orange-600" />
+                           <span className="text-lg font-black text-slate-800">{selectedFile.isoMetadata?.importance}</span>
                         </div>
                       </div>
-                      <div>
-                        <p className="text-[10px] text-slate-400 font-bold mb-2 uppercase tracking-widest">الجهة التابع لها</p>
-                        <div className="flex items-center gap-2">
-                           <Briefcase size={16} className="text-slate-600" />
-                           <span className="text-sm font-black text-slate-800">{selectedFile.isoMetadata?.entity || 'غير محدد'}</span>
+                      <div className="space-y-3">
+                        <p className="text-[10px] text-slate-400 font-black mb-1 uppercase tracking-widest">تاريخ الأرشفة</p>
+                        <div className="flex items-center gap-3">
+                           <Calendar size={20} className="text-rose-600" />
+                           <span className="text-lg font-black text-slate-800">{new Date(selectedFile.isoMetadata?.createdAt || '').toLocaleDateString('ar-SA')}</span>
                         </div>
                       </div>
-                      <div>
-                        <p className="text-[10px] text-slate-400 font-bold mb-2 uppercase tracking-widest">حجم الملف</p>
-                        <div className="flex items-center gap-2">
-                           <Database size={16} className="text-slate-400" />
-                           <span className="text-sm font-black text-slate-800">{(selectedFile.size / 1024 / 1024).toFixed(2)} MB</span>
+                      <div className="space-y-3">
+                        <p className="text-[10px] text-slate-400 font-black mb-1 uppercase tracking-widest">حجم البيانات</p>
+                        <div className="flex items-center gap-3">
+                           <Database size={20} className="text-slate-400" />
+                           <span className="text-lg font-black text-slate-800">{(selectedFile.size / 1024 / 1024).toFixed(2)} MB</span>
                         </div>
                       </div>
                    </div>
@@ -514,13 +527,13 @@ const App: React.FC = () => {
               </div>
             </div>
             
-            {/* Modal Footer */}
-            <div className="p-8 md:p-10 bg-slate-50 border-t border-slate-100 flex justify-end gap-6 shrink-0">
-               <button onClick={() => handleOpenInBrowser(selectedFile)} className="px-10 py-5 bg-white border border-slate-200 text-slate-600 rounded-2xl text-lg font-black flex gap-3 shadow-sm hover:bg-slate-50 transition-all">
-                 <ExternalLink size={24} /> فتح المستند الأصلي
+            {/* Modal Footer - Professional Actions */}
+            <div className="p-10 md:p-12 bg-slate-50 border-t border-slate-100 flex flex-wrap justify-end gap-6 shrink-0">
+               <button onClick={() => handleOpenInBrowser(selectedFile)} className="px-10 py-5 bg-white border border-slate-200 text-slate-600 rounded-2xl text-lg font-black flex gap-3 shadow-sm hover:bg-slate-50 transition-all hover:-translate-y-0.5 active:translate-y-0">
+                 <ExternalLink size={26} /> فتح المستند الأصلي للمراجعة
                </button>
-               <button className="px-16 py-5 bg-slate-900 text-white rounded-2xl text-lg font-black flex gap-3 shadow-2xl hover:bg-black transition-all hover:scale-[1.02] active:scale-95">
-                 <Download size={24} /> تحميل النسخة المعتمدة
+               <button className="px-16 py-5 bg-indigo-600 text-white rounded-2xl text-lg font-black flex gap-3 shadow-2xl hover:bg-black transition-all hover:scale-[1.03] active:scale-95 shadow-indigo-500/20">
+                 <Download size={26} /> تحميل النسخة المعتمدة
                </button>
             </div>
           </div>
@@ -533,6 +546,7 @@ const App: React.FC = () => {
         .custom-scrollbar::-webkit-scrollbar-thumb { background: #e2e8f0; border-radius: 20px; border: 4px solid transparent; background-clip: content-box; }
         .custom-scrollbar::-webkit-scrollbar-thumb:hover { background: #cbd5e1; }
         .dir-rtl { direction: rtl; }
+        .text-wrap { text-wrap: wrap; }
       `}</style>
     </div>
   );
