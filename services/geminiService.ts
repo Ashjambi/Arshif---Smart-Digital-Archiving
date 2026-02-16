@@ -1,8 +1,6 @@
 import { GoogleGenAI, Type, GenerateContentResponse } from "@google/genai";
 import { DocumentType, Importance, Confidentiality, ArchiveStatus, ISOMetadata } from "../types";
 
-const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-
 const extractJson = (text: string) => {
   const cleaned = text.trim();
   try {
@@ -44,6 +42,9 @@ export const classifyFileContent = async (
   otherFilesSummary: string = "",
   folderRelatedIds: string[] = []
 ): Promise<Partial<ISOMetadata>> => {
+  // تهيئة المحرك داخل الدالة لتفادي أخطاء مفتاح API عند بدء التطبيق
+  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+  
   const prompt = `أنت خبير أرشفة رقمية محترف (ISO 15489). حلل هذا المستند واستخرج البيانات التالية بدقة من محتواه:
   - اسم الملف: ${fileName}
   - المحتوى المستخرج: ${content.substring(0, 4000)}
@@ -99,6 +100,8 @@ export const classifyFileContent = async (
 };
 
 export const askAgent = async (query: string, filesContext: string, currentFileText?: string): Promise<string> => {
+  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+  
   const prompt = `أنت "خبير الأرشفة الاستراتيجي"، وكيل ذكي ملم بمعايير ISO 15489 وإجراءات الحوكمة الرقمية. لديك ذاكرة قوية تمكنك من الربط بين المعاملات بناءً على أرقامها ومواضيعها.
   
   السياق المتاح من الأرشيف:
