@@ -1,5 +1,7 @@
 {
   "name": "Arshif - Smart Digital Archiving",
   "description": "An AI-powered SaaS platform for digital archiving, classifying files according to ISO 15489 standards, and interacting with a professional digital archiving agent.",
-  "requestFramePermissions": []
+  "requestFramePermissions": [
+    "camera"
+  ]
 }

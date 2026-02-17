@@ -1,3 +1,4 @@
+
 import { GoogleGenAI, Type } from "@google/genai";
 import { ArchiveStatus, ISOMetadata } from "../types";
 
@@ -19,7 +20,7 @@ const extractJson = (text: string) => {
 };
 
 /**
- * تحليل ملف واحد محدد بعمق
+ * Deep analysis of a specific document for ISO 15489 classification
  */
 export const analyzeSpecificFile = async (
   fileName: string, 
@@ -27,21 +28,23 @@ export const analyzeSpecificFile = async (
 ): Promise<Partial<ISOMetadata>> => {
   const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
   
-  const prompt = `بصفتك خبير أرشفة ISO 15489، قم بقراءة وتحليل محتوى هذا الملف بدقة:
+  const prompt = `بصفتك خبير أرشفة رقمية عالمي (ISO 15489)، قم بتحليل هذا المستند بدقة متناهية:
   اسم الملف: ${fileName}
-  المحتوى المستخرج: 
+  النص المستخرج: 
   ---
-  ${content.substring(0, 5000)}
+  ${content.substring(0, 10000)}
   ---
-  قم باستخراج البيانات التالية بدقة من النص أعلاه وأرجعها بتنسيق JSON:
-  - title: عنوان رسمي للمستند.
-  - description: ملخص تنفيذي دقيق لما يحتويه المستند.
-  - sender: الجهة المرسلة (إذا وجدت).
-  - recipient: الجهة المستلمة (إذا وجدت).
-  - category: تصنيف الموضوع (مالي، إداري، تقني، إلخ).
-  - documentType: نوع المستند (عقد، فاتورة، تعميم، إلخ).
-  - importance: درجة الأهمية (عادي، مهم، حرج).
-  - confidentiality: مستوى السرية (عام، سري، إلخ).`;
+  
+  المطلوب استخراج البيانات التالية بتنسيق JSON حصراً:
+  - title: عنوان رسمي ومهني للمستند.
+  - description: ملخص تنفيذي (50-100 كلمة) يشرح جوهر الوثيقة.
+  - sender: الجهة أو الشخص المرسل.
+  - recipient: الجهة أو الشخص المستلم.
+  - category: تصنيف الموضوع.
+  - documentType: نوع الوثيقة (عقد، فاتورة، تعميم، محضر اجتماع، تقرير، سياسة).
+  - importance: (عادي، مهم، حرج).
+  - confidentiality: (عام، داخلي، سري، سري للغاية).
+  - retentionPolicy: سياسة الحفظ المقترحة.`;
 
   try {
     const response = await ai.models.generateContent({
@@ -49,7 +52,6 @@ export const analyzeSpecificFile = async (
       contents: prompt,
       config: {
         responseMimeType: "application/json",
-        thinkingConfig: { thinkingBudget: 0 }
       }
     });
     
@@ -60,47 +62,61 @@ export const analyzeSpecificFile = async (
       updatedAt: new Date().toISOString()
     };
   } catch (error) {
-    console.error("Analysis error:", error);
+    console.error("Deep Analysis error:", error);
     throw error;
   }
 };
 
 /**
- * الدردشة مع محتوى ملف واحد محدد
+ * Chat with a specific file context
  */
 export const chatWithFile = async (query: string, fileName: string, fileContent: string): Promise<string> => {
   const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-  const prompt = `أنت الآن مساعد ذكي يقرأ ملفاً واحداً فقط ويجيب على الأسئلة المتعلقة به.
   
-  الملف الحالي: ${fileName}
-  محتوى الملف:
+  // Enhanced prompt to force AI to answer even if content is simple
+  const prompt = `أنت مساعد أرشفة رقمي محترف. سياق العمل هو المستند التالي:
+  اسم الملف: ${fileName}
+  المحتوى المستخرج:
   ---
-  ${fileContent.substring(0, 10000)}
+  ${fileContent}
   ---
   
-  أجب على السؤال التالي بناءً على محتوى الملف فقط: ${query}`;
+  بناءً على هذا المحتوى، أجب على السؤال التالي باللغة العربية: ${query}
+  ملاحظة: إذا كان المحتوى يبدو مختصراً، حاول تقديم استنتاجات منطقية بناءً على اسم الملف والمعلومات المتاحة.`;
 
   try {
     const response = await ai.models.generateContent({
       model: "gemini-3-flash-preview",
-      contents: prompt,
-      config: {
-        thinkingConfig: { thinkingBudget: 0 }
-      }
+      contents: prompt
     });
-    return response.text || "لم أتمكن من العثور على إجابة داخل الملف.";
+    return response.text || "لم أتمكن من استخراج إجابة دقيقة.";
   } catch (error) {
-    return "حدث خطأ أثناء محاولة قراءة الملف.";
+    return "حدث خطأ أثناء معالجة استفسارك حول الملف.";
+  }
+};
+
+/**
+ * General archive agent chat
+ */
+export const askAgent = async (query: string, archiveContext: string): Promise<string> => {
+  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+  
+  const prompt = `أنت خبير الأرشفة الرقمي (أرشيف PRO). لديك نظرة عامة على الملفات التالية:
+  ---
+  ${archiveContext}
+  ---
+  
+  أجب على سؤال المستخدم بمهنية عالية وباللغة العربية: ${query}`;
+
+  try {
+    const response = await ai.models.generateContent({
+      model: "gemini-3-flash-preview",
+      contents: prompt
+    });
+    return response.text || "عذراً، لم أستطع العثور على المعلومات المطلوبة.";
+  } catch (error) {
+    return "حدث خطأ أثناء التواصل مع محرك الذكاء الاصطناعي.";
   }
 };
 
 export const classifyFileContent = analyzeSpecificFile;
-export const askAgent = async (query: string, filesContext: string): Promise<string> => {
-  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-  const prompt = `أنت مساعد أرشفة ذكي. السياق العام للملفات المتاحة:\n${filesContext}\nالسؤال: ${query}`;
-  const response = await ai.models.generateContent({
-    model: "gemini-3-flash-preview",
-    contents: prompt,
-  });
-  return response.text || "";
-};

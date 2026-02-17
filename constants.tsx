@@ -1,24 +1,13 @@
-
 import React from 'react';
 import { 
-  FileText, 
-  Shield, 
-  Clock, 
-  AlertCircle, 
-  Briefcase, 
   Home, 
   Settings, 
-  MessageSquare,
-  Search,
-  Filter,
   FolderOpen
 } from 'lucide-react';
 
-// Store component references instead of elements to allow dynamic prop passing (size, className)
 export const NAV_ITEMS = [
   { id: 'dashboard', label: 'لوحة التحكم', icon: Home },
   { id: 'archive', label: 'الأرشيف الذكي', icon: FolderOpen },
-  { id: 'agent', label: 'المساعد الذكي', icon: MessageSquare },
   { id: 'settings', label: 'الإعدادات', icon: Settings },
 ];
 
