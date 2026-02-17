@@ -20,15 +20,14 @@ const extractJson = (text: string) => {
 
 async function retryWithBackoff<T>(
   fn: () => Promise<T>,
-  retries = 3,
-  delay = 2000,
+  retries = 2,
+  delay = 1000,
   factor = 2
 ): Promise<T> {
   try {
     return await fn();
   } catch (error: any) {
-    const isOverloaded = error?.status === 503 || error?.code === 503 || (error?.message && error.message.includes('high demand'));
-    if (retries > 0 && isOverloaded) {
+    if (retries > 0) {
       await new Promise(resolve => setTimeout(resolve, delay));
       return retryWithBackoff(fn, retries - 1, delay * factor, factor);
     }
@@ -42,32 +41,20 @@ export const classifyFileContent = async (
   otherFilesSummary: string = "",
   folderRelatedIds: string[] = []
 ): Promise<Partial<ISOMetadata>> => {
-  // تهيئة المحرك داخل الدالة لتفادي أخطاء مفتاح API عند بدء التطبيق
   const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
   
-  const prompt = `أنت خبير أرشفة رقمية محترف (ISO 15489). حلل هذا المستند واستخرج البيانات التالية بدقة من محتواه:
-  - اسم الملف: ${fileName}
-  - المحتوى المستخرج: ${content.substring(0, 4000)}
+  const prompt = `أنت محرك فهرسة ذكي (ISO 15489). حلل المستند:
+  - الاسم: ${fileName}
+  - المحتوى: ${content.substring(0, 3000)}
   
-  المطلوب استخراج الحقول التالية (باللغة العربية):
-  1. sender: المرسل (الجهة أو الشخص المرسل)
-  2. recipient: إلى (المستلم الرئيسي)
-  3. cc: نسخة إلى (الجهات المذكورة للعلم)
-  4. title: موضوع المعاملة (ملخص دقيق جداً للمحتوى)
-  5. category: التصنيف الموضوعي (مثال: مالي، إداري، شؤون موظفين، فني)
-  6. documentType: نوع المعاملة (اختر من القائمة المتاحة)
-  7. incomingNumber: رقم القيد أو الوارد المكتوب على الخطاب
-  8. outgoingNumber: رقم الصادر المكتوب على الخطاب (إن وجد)
-  9. description: وصف موجز للسياق الإداري
-  10. importance: الأهمية (عادي، مهم، عالي الأهمية، حرج)
-  11. confidentiality: السرية (عام، داخلي، سري، سري للغاية)
-
-  قارن مع سياق الأرشيف المتاح لإيجاد أي روابط منطقية:
-  ${otherFilesSummary}`;
+  استخرج JSON بالحقول: 
+  title (عنوان مهني), description (ملخص تنفيذي للمحتوى), sender (المرسل), recipient (المستلم), cc, category, incomingNumber, outgoingNumber, documentType, importance (عادي، مهم، حرج), confidentiality (عام، سري).
+  
+  السياق السابق: ${otherFilesSummary.substring(0, 500)}`;
 
   try {
     const response = await retryWithBackoff<GenerateContentResponse>(() => ai.models.generateContent({
-      model: "gemini-3-pro-preview",
+      model: "gemini-3-flash-preview",
       contents: prompt,
       config: {
         responseMimeType: "application/json",
@@ -83,18 +70,17 @@ export const classifyFileContent = async (
             incomingNumber: { type: Type.STRING },
             outgoingNumber: { type: Type.STRING },
             documentType: { type: Type.STRING },
-            entity: { type: Type.STRING },
-            year: { type: Type.NUMBER },
             importance: { type: Type.STRING },
             confidentiality: { type: Type.STRING },
           },
-          required: ["title", "documentType", "importance", "confidentiality"],
+          required: ["title", "documentType"],
         }
       }
     }));
     const result = extractJson(response.text || "{}");
     return { ...result, status: ArchiveStatus.ACTIVE, createdAt: new Date().toISOString() };
   } catch (error) {
+    console.error("Classification error:", error);
     return { title: fileName, documentType: DocumentType.OTHER };
   }
 };
@@ -102,29 +88,18 @@ export const classifyFileContent = async (
 export const askAgent = async (query: string, filesContext: string, currentFileText?: string): Promise<string> => {
   const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
   
-  const prompt = `أنت "خبير الأرشفة الاستراتيجي"، وكيل ذكي ملم بمعايير ISO 15489 وإجراءات الحوكمة الرقمية. لديك ذاكرة قوية تمكنك من الربط بين المعاملات بناءً على أرقامها ومواضيعها.
-  
-  السياق المتاح من الأرشيف:
+  const prompt = `أنت "خبير الأرشفة الاستراتيجي". أجب بدقة بناءً على الأرشيف التالي:
   ${filesContext}
-  
-  ${currentFileText ? `سياق المستند الذي يناقشه المستخدم حالياً: \n${currentFileText}` : "لا يوجد مستند محدد مفتوح حالياً."}
-
-  تعليمات الرد الاحترافي:
-  1. كن رسمياً، دقيقاً، واستخدم مصطلحات إدارية فصحى.
-  2. ابحث في "رقم الوارد" و "رقم الصادر" و "الموضوع" للإجابة عن الاستفسارات.
-  3. اربط المستندات ببعضها (مثال: "بالإشارة إلى الخطاب الوارد رقم...، يتبين أن هذه المعاملة مرتبطة بـ...").
-  4. استدل بنصوص مباشرة من محتوى المستندات (OCR) لتعزيز موثوقية إجابتك.
-  5. اقترح تصنيفات أو سياسات حفظ إذا شعرت بوجود خلل في الأرشفة.
-
-  استعلام المستخدم: ${query}`;
+  ${currentFileText ? `\nالمستند الحالي: ${currentFileText}` : ""}
+  المستخدم يسأل: ${query}`;
 
   try {
     const response = await retryWithBackoff<GenerateContentResponse>(() => ai.models.generateContent({
-      model: "gemini-3-pro-preview",
+      model: "gemini-3-flash-preview",
       contents: prompt,
     }));
-    return response.text || "عذراً، لم أتمكن من صياغة إجابة دقيقة حالياً.";
+    return response.text || "عذراً، لا توجد إجابة.";
   } catch (error) {
-    return "نعتذر، واجهنا مشكلة تقنية في محرك الذكاء الاصطناعي. يرجى المحاولة لاحقاً.";
+    return "حدث خطأ في الاتصال بالذكاء الاصطناعي.";
   }
 };
