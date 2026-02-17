@@ -114,7 +114,10 @@ const App: React.FC = () => {
   }, []);
 
   useEffect(() => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(files));
+    // Note: originalFile cannot be saved to localStorage (it's binary), so files will lose their binary data on refresh.
+    // We strip originalFile before saving to storage.
+    const filesToSave = files.map(({ originalFile, ...rest }) => rest);
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(filesToSave));
     localStorage.setItem(AUDIT_KEY, JSON.stringify(auditLogs));
     localStorage.setItem(INTEGRATION_KEY, JSON.stringify(integrations));
     if (connectedFolderName) {
@@ -216,6 +219,7 @@ ${f.isoMetadata?.executiveSummary}
     return fileList;
   };
 
+  // Helper to send text messages
   const sendTelegramReal = async (text: string, inlineButton?: { text: string, url: string }) => {
     const { botToken, adminChatId } = integrationsRef.current.telegram.config;
     if (!integrationsRef.current.telegram.connected || !botToken || !adminChatId) return false;
@@ -243,6 +247,7 @@ ${f.isoMetadata?.executiveSummary}
     } catch (e) { return false; }
   };
 
+  // Helper to upload actual files
   const sendTelegramFile = async (file: FileRecord) => {
     const { botToken, adminChatId } = integrationsRef.current.telegram.config;
     if (!integrationsRef.current.telegram.connected || !botToken || !adminChatId) return false;
@@ -253,24 +258,30 @@ ${f.isoMetadata?.executiveSummary}
         formData.append('caption', `📄 <b>${file.name}</b>\n\n✅ تم استرجاع الملف بنجاح من الأرشيف.\n#️⃣ رقم المعاملة: ${file.isoMetadata?.incomingNumber || 'غير محدد'}`);
         formData.append('parse_mode', 'HTML');
         
-        // تحويل المحتوى النصي إلى ملف حقيقي (Blob)
-        // ملاحظة: في بيئة المتصفح هذه، نحن نخزن المحتوى كنص في 'content'. 
-        // سنقوم بتحويله إلى Blob لإرساله كملف.
-        const fileContent = file.content || "محتوى الملف غير متاح للقراءة المباشرة.";
-        const blob = new Blob([fileContent], { type: file.type || 'text/plain' });
-        formData.append('document', blob, file.name);
+        // Use the original file object if available (for PDFs, Images, etc.)
+        if (file.originalFile) {
+            formData.append('document', file.originalFile);
+        } else {
+             // Fallback: Create blob from text content if original file is lost (e.g. after refresh)
+             const content = file.content || "عذراً، الملف الأصلي غير متاح في هذه الجلسة. تم إنشاء نسخة نصية من المحتوى المحفوظ.";
+             const blob = new Blob([content], { type: 'text/plain' });
+             formData.append('document', blob, `${file.name}.txt`);
+        }
 
         const response = await fetch(`https://api.telegram.org/bot${botToken}/sendDocument`, {
             method: 'POST',
-            body: formData // المتصفح سيضع Content-Type: multipart/form-data تلقائياً
+            body: formData // Fetch automatically sets Content-Type to multipart/form-data with boundary
         });
 
         const data = await response.json();
-        if (data.ok) {
-            setIntegrations(p => ({...p, telegram: {...p.telegram, stats: {...p.telegram.stats, messagesSent: p.telegram.stats.messagesSent + 1}}}));
-            return true;
+        
+        if (!data.ok) {
+            console.error("Telegram Upload Error:", data);
+            return false;
         }
-        return false;
+
+        setIntegrations(p => ({...p, telegram: {...p.telegram, stats: {...p.telegram.stats, messagesSent: p.telegram.stats.messagesSent + 1}}}));
+        return true;
     } catch (e) {
         console.error("Failed to upload file to Telegram", e);
         return false;
@@ -347,19 +358,26 @@ ${f.isoMetadata?.executiveSummary}
                const context = getAgentContext();
                const aiResponse = await askAgent(userText, context);
 
-               // Send Response
-               await sendTelegramReal(aiResponse);
-
-               // Handle Downloads via Telegram
+               // Handle Downloads via Telegram (Check for the tag first)
                if (aiResponse.includes('[[DOWNLOAD:')) {
                   const match = aiResponse.match(/\[\[DOWNLOAD:(.*?)\]\]/);
+                  
+                  // Send the text part first (removing the tag)
+                  const cleanText = aiResponse.replace(/\[\[DOWNLOAD:.*?\]\]/, '');
+                  await sendTelegramReal(cleanText);
+
                   if (match && match[1]) {
                       const targetFile = filesRef.current.find(f => f.isoMetadata?.recordId === match[1] || f.id === match[1]);
                       if (targetFile) {
-                          // Trigger execution but no need to send link here, the download agent handles it
+                          // Execute download agent (uploads actual file)
                           executeDownloadAgent(match[1]);
+                      } else {
+                          await sendTelegramReal("⚠️ عذراً، لم يتم العثور على الملف المطلوب في النظام.");
                       }
                   }
+               } else {
+                   // Normal message
+                   await sendTelegramReal(aiResponse);
                }
             }
           }
@@ -400,7 +418,7 @@ ${f.isoMetadata?.executiveSummary}
     await new Promise(r => setTimeout(r, 800));
     setDownloadAgentState(prev => ({ ...prev, step: 'sending', progress: 90 }));
 
-    // NEW LOGIC: Upload the file directly instead of sending a link
+    // UPLOAD THE ACTUAL FILE to Telegram
     const success = await sendTelegramFile(targetFile);
 
     setDownloadAgentState(prev => ({ ...prev, step: 'completed', progress: 100 }));
@@ -422,7 +440,10 @@ ${f.isoMetadata?.executiveSummary}
             timestamp: new Date() 
         }]);
     } else {
-         setMainChatMessages(prev => [...prev, { id: Date.now().toString(), role: 'assistant', text: '❌ فشل إرسال الملف. تأكد من إعدادات تليجرام وحجم الملف.', timestamp: new Date() }]);
+         setMainChatMessages(prev => [...prev, { id: Date.now().toString(), role: 'assistant', text: '❌ فشل إرسال الملف. تأكد من أن حجم الملف أقل من 50MB وأن الاتصال جيد.', timestamp: new Date() }]);
+         
+         // Notify User via Telegram about the failure
+         await sendTelegramReal(`⚠️ <b>تنبيه فشل الإرسال:</b>\n\nحاولنا إرسال ملف "${targetFile.name}" ولكن حدث خطأ أثناء الرفع. قد يكون حجم الملف كبيراً جداً لحدود البوت (50MB) أو هناك مشكلة في الشبكة.`);
     }
 
     setTimeout(() => {
@@ -458,6 +479,7 @@ ${f.isoMetadata?.executiveSummary}
         type: file.type,
         lastModified: file.lastModified,
         content: textContent.substring(0, 30000), 
+        originalFile: file, // Store the actual file object for uploading later
         isProcessing: true,
         isoMetadata: {
           recordId: `ARC-${new Date().getFullYear()}-${Math.floor(1000 + Math.random() * 9000)}`,

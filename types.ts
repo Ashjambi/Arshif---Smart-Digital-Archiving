@@ -86,6 +86,7 @@ export interface FileRecord {
   isoMetadata?: ISOMetadata;
   isProcessing: boolean;
   extractedText?: string; // Content extracted via OCR or Mammoth
+  originalFile?: File; // مرجع للملف الأصلي في الذاكرة لغرض التحميل والإرسال
 }
 
 export interface ChatMessage {
