@@ -22,7 +22,7 @@ import { NAV_ITEMS, STATUS_COLORS, IMPORTANCE_COLORS } from './constants';
 import { classifyFileContent, askAgent } from './services/geminiService';
 
 const STORAGE_KEY = 'arshif_records_v2';
-const BATCH_SIZE = 5; // معالجة 5 ملفات في نفس الوقت لزيادة السرعة
+const BATCH_SIZE = 3; // تقليل حجم الدفعة لضمان استقرار المتصفح مع ملفات الوورد
 
 const getFileIcon = (fileName: string) => {
   const ext = fileName.split('.').pop()?.toLowerCase();
@@ -49,7 +49,7 @@ const App: React.FC = () => {
   const [activeTab, setActiveTab] = useState('dashboard');
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
   const [files, setFiles] = useState<FileRecord[]>([]);
-  const [scanProgress, setScanProgress] = useState({ total: 0, current: 0, currentFile: '', status: 'idle' });
+  const [scanProgress, setScanProgress] = useState({ total: 0, current: 0, currentFile: '', status: 'idle', phase: '' });
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedFile, setSelectedFile] = useState<FileRecord | null>(null);
   
@@ -71,20 +71,37 @@ const App: React.FC = () => {
       const reader = new FileReader();
       const ext = file.name.split('.').pop()?.toLowerCase();
       
+      // مهلة زمنية لاستخراج النصوص (10 ثواني) لضمان عدم التعليق
+      const timeout = setTimeout(() => {
+        console.warn(`Timeout reading ${file.name}`);
+        resolve({ content: "Timeout", extractedText: "تأخر استخراج النص، تم الاعتماد على اسم الملف." });
+      }, 10000);
+
       if (['jpg', 'jpeg', 'png', 'webp'].includes(ext || '')) {
-        reader.onload = (e) => resolve({ content: e.target?.result as string });
+        reader.onload = (e) => {
+          clearTimeout(timeout);
+          resolve({ content: e.target?.result as string });
+        };
         reader.readAsDataURL(file);
       } else if (ext === 'docx') {
+        setScanProgress(p => ({ ...p, phase: 'استخراج نصوص Word...' }));
         reader.onload = async (e) => {
           try {
             const arrayBuffer = e.target?.result as ArrayBuffer;
             const res = await mammoth.extractRawText({ arrayBuffer });
-            resolve({ content: res.value.substring(0, 5000), extractedText: res.value });
-          } catch { resolve({ content: "Error" }); }
+            clearTimeout(timeout);
+            resolve({ content: res.value.substring(0, 3000), extractedText: res.value });
+          } catch { 
+            clearTimeout(timeout);
+            resolve({ content: "Error", extractedText: "فشل قراءة ملف الوورد" }); 
+          }
         };
         reader.readAsArrayBuffer(file);
       } else {
-        reader.onload = (e) => resolve({ content: (e.target?.result as string).substring(0, 5000) });
+        reader.onload = (e) => {
+          clearTimeout(timeout);
+          resolve({ content: (e.target?.result as string).substring(0, 3000) });
+        };
         reader.readAsDataURL(file);
       }
     });
@@ -92,26 +109,26 @@ const App: React.FC = () => {
 
   const processFileChanges = async (newFiles: File[]) => {
     if (newFiles.length === 0) return;
-    setScanProgress({ total: newFiles.length, current: 0, currentFile: 'بدء المعالجة المتوازية...', status: 'analyzing' });
+    setScanProgress({ total: newFiles.length, current: 0, currentFile: 'تحليل هيكلية المجلدات...', status: 'analyzing', phase: 'تحضير' });
 
     let updatedFileList = [...files];
-    const archiveSummary = updatedFileList.slice(0, 20).map(f => f.isoMetadata?.title).join(', ');
+    const archiveSummary = updatedFileList.slice(0, 15).map(f => f.isoMetadata?.title).join(', ');
 
-    // تقسيم الملفات إلى مجموعات (Batches) للمعالجة المتوازية
     for (let i = 0; i < newFiles.length; i += BATCH_SIZE) {
       const batch = newFiles.slice(i, i + BATCH_SIZE);
       const batchPromises = batch.map(async (f) => {
-        setScanProgress(p => ({ ...p, currentFile: f.name }));
+        setScanProgress(p => ({ ...p, currentFile: f.name, phase: 'قراءة الملف' }));
         const { content, extractedText } = await readFileData(f);
         
-        // استخراج بيانات Gemini
+        setScanProgress(p => ({ ...p, phase: 'تحليل الذكاء الاصطناعي (Flash)...' }));
         const metadata = await classifyFileContent(f.name, extractedText || f.name, archiveSummary);
         
         const record: FileRecord = {
           id: Math.random().toString(36).substr(2, 9),
           name: f.name, size: f.size, type: f.type, lastModified: f.lastModified,
-          isProcessing: false, preview: content, extractedText,
-          isoMetadata: { ...metadata as any, originalPath: f.name, recordId: `REC-${Date.now().toString().slice(-4)}` }
+          isProcessing: false, preview: content.startsWith('data:') ? content : undefined, 
+          extractedText,
+          isoMetadata: { ...metadata as any, originalPath: f.name, recordId: `REC-${Date.now().toString().slice(-4)}${Math.floor(Math.random()*10)}` }
         };
         return record;
       });
@@ -119,10 +136,10 @@ const App: React.FC = () => {
       const results = await Promise.all(batchPromises);
       updatedFileList = [...results, ...updatedFileList];
       setFiles([...updatedFileList]);
-      setScanProgress(p => ({ ...p, current: Math.min(i + BATCH_SIZE, newFiles.length) }));
+      setScanProgress(p => ({ ...p, current: Math.min(i + BATCH_SIZE, newFiles.length), phase: 'تمت الفهرسة' }));
     }
 
-    setScanProgress(p => ({ ...p, status: 'idle' }));
+    setScanProgress(p => ({ ...p, status: 'idle', phase: '' }));
   };
 
   const handleManualUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -162,7 +179,7 @@ const App: React.FC = () => {
             <header className="flex justify-between items-end bg-white p-10 rounded-[3rem] border border-slate-100 shadow-xl">
               <div>
                 <h1 className="text-5xl font-black text-slate-900 tracking-tight">الأرشفة الذكية</h1>
-                <p className="text-slate-500 mt-2 font-bold text-lg">فهرسة فائقة السرعة بمعالجة متوازية</p>
+                <p className="text-slate-500 mt-2 font-bold text-lg">تحليل سريع ومستقر للملفات الإدارية</p>
               </div>
               <label className="bg-slate-900 text-white px-10 py-5 rounded-2xl flex items-center gap-3 cursor-pointer shadow-xl font-black hover:bg-black transition-all">
                 <FolderPlus size={22} /> أرشفة مجلد
@@ -173,16 +190,19 @@ const App: React.FC = () => {
             {scanProgress.status !== 'idle' && (
               <div className="bg-slate-900 text-white p-10 rounded-[3rem] shadow-2xl">
                 <div className="flex items-center gap-6 mb-6">
-                  <div className="bg-indigo-600 p-4 rounded-2xl animate-spin"><RefreshCw size={24} /></div>
+                  <div className="bg-indigo-600 p-4 rounded-2xl animate-spin shadow-[0_0_20px_rgba(99,102,241,0.5)]"><RefreshCw size={24} /></div>
                   <div className="flex-1">
-                    <span className="font-black text-2xl block mb-1">جاري معالجة: {scanProgress.currentFile}</span>
-                    <span className="text-indigo-400 text-sm font-bold">يتم تحليل الملفات في مجموعات متوازية لسرعة قصوى</span>
+                    <span className="font-black text-2xl block mb-1">المعالجة الحالية: {scanProgress.currentFile}</span>
+                    <span className="text-indigo-400 text-sm font-bold uppercase tracking-widest">{scanProgress.phase}</span>
                   </div>
                 </div>
                 <div className="w-full h-4 bg-white/10 rounded-full overflow-hidden">
                   <div className="h-full bg-indigo-500 transition-all duration-500" style={{ width: `${(scanProgress.current / scanProgress.total) * 100}%` }}></div>
                 </div>
-                <p className="mt-4 text-xs text-slate-400 font-bold">تم إكمال {scanProgress.current} من أصل {scanProgress.total} ملف</p>
+                <div className="flex justify-between mt-4">
+                  <p className="text-xs text-slate-400 font-bold">تم إكمال {scanProgress.current} من أصل {scanProgress.total} ملف</p>
+                  <p className="text-xs text-indigo-400 font-black animate-pulse">يرجى عدم إغلاق المتصفح...</p>
+                </div>
               </div>
             )}
 
@@ -190,7 +210,7 @@ const App: React.FC = () => {
               {[
                 { label: 'إجمالي السجلات', value: files.length, icon: <FileText className="text-indigo-600"/> },
                 { label: 'سجلات نشطة', value: files.length, icon: <CheckCircle2 className="text-emerald-600"/> },
-                { label: 'سرعة الفهرسة', value: 'عالية', icon: <Zap className="text-amber-600"/> },
+                { label: 'الاستقرار', value: '100%', icon: <Zap className="text-amber-600"/> },
                 { label: 'الذكاء الاصطناعي', value: 'Flash 3', icon: <Bot className="text-rose-600"/> },
               ].map((s, i) => (
                 <div key={i} className="bg-white p-8 rounded-[2.5rem] border border-slate-100 flex items-center justify-between shadow-sm hover:shadow-xl transition-all group">
