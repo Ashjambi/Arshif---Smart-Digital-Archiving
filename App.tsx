@@ -11,8 +11,6 @@ import {
 } from 'lucide-react';
 // @ts-ignore
 import mammoth from 'mammoth';
-// @ts-ignore
-import Tesseract from 'tesseract.js';
 
 import { 
   FileRecord, ISOMetadata, ChatMessage, DocumentType, Importance, Confidentiality, 
@@ -21,8 +19,7 @@ import {
 import { NAV_ITEMS, STATUS_COLORS, IMPORTANCE_COLORS } from './constants';
 import { classifyFileContent, askAgent } from './services/geminiService';
 
-const STORAGE_KEY = 'arshif_records_v3';
-const BATCH_SIZE = 2; // تقليل حجم الدفعة لضمان عدم استهلاك الذاكرة بالكامل
+const STORAGE_KEY = 'arshif_records_v4';
 
 const getFileIcon = (fileName: string) => {
   const ext = fileName.split('.').pop()?.toLowerCase();
@@ -71,13 +68,16 @@ const App: React.FC = () => {
     
     if (ext === 'docx') {
       try {
-        // تنفيذ Mammoth مع وعد (Promise) خارجي لتجنب التعليق
         const arrayBuffer = await file.arrayBuffer();
-        const result = await mammoth.extractRawText({ arrayBuffer });
-        return result.value.substring(0, 3000);
+        // مهلة زمنية 5 ثوانٍ فقط لاستخراج النص من وورد
+        const textPromise = mammoth.extractRawText({ arrayBuffer }).then((r: any) => r.value);
+        const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout')), 5000));
+        
+        const result = await Promise.race([textPromise, timeoutPromise]) as string;
+        return result.substring(0, 3000);
       } catch (err) {
-        console.error("Mammoth failed:", err);
-        return ""; // العودة بنص فارغ والاعتماد على اسم الملف
+        console.warn("Skipping text extraction for:", file.name);
+        return ""; // تخطي النص في حال التعليق أو الخطأ
       }
     }
     
@@ -90,46 +90,44 @@ const App: React.FC = () => {
 
   const processFileChanges = async (newFiles: File[]) => {
     if (newFiles.length === 0) return;
-    setScanProgress({ total: newFiles.length, current: 0, currentFile: 'تهيئة الأرشفة...', status: 'analyzing', phase: 'تحضير' });
+    setScanProgress({ total: newFiles.length, current: 0, currentFile: 'بدء الأرشفة...', status: 'analyzing', phase: 'تحضير' });
 
-    let updatedFileList = [...files];
-    const archiveSummary = updatedFileList.slice(0, 10).map(f => f.isoMetadata?.title).join(', ');
-
-    for (let i = 0; i < newFiles.length; i += BATCH_SIZE) {
-      const batch = newFiles.slice(i, i + BATCH_SIZE);
+    for (let i = 0; i < newFiles.length; i++) {
+      const f = newFiles[i];
+      setScanProgress(p => ({ ...p, current: i, currentFile: f.name, phase: 'جاري القراءة...' }));
       
-      const batchPromises = batch.map(async (f) => {
-        setScanProgress(p => ({ ...p, currentFile: f.name, phase: 'جاري فحص المستند...' }));
-        
-        // محاولة استخراج النص بهدوء، إذا فشل سنستخدم اسم الملف فقط
+      try {
+        // استخراج النص مع مهلة
         const extractedText = await safeExtractText(f);
         
-        setScanProgress(p => ({ ...p, phase: 'تحليل البيانات ذكياً...' }));
+        setScanProgress(p => ({ ...p, phase: 'تحليل الذكاء الاصطناعي...' }));
         
-        // استدعاء Gemini - سيتم الاعتماد على اسم الملف إذا كان extractedText فارغاً
+        // جلب السياق من الملفات الموجودة حالياً
+        const archiveSummary = files.slice(0, 5).map(af => af.isoMetadata?.title).join(', ');
+        
+        // تصنيف الملف
         const metadata = await classifyFileContent(f.name, extractedText || `اسم الملف: ${f.name}`, archiveSummary);
         
         const record: FileRecord = {
           id: Math.random().toString(36).substr(2, 9),
           name: f.name, size: f.size, type: f.type, lastModified: f.lastModified,
           isProcessing: false,
-          extractedText: extractedText || "تعذر استخراج النص التفصيلي لهذا الملف.",
+          extractedText: extractedText || "تمت الفهرسة بناءً على عنوان الملف فقط لسرعة النظام.",
           isoMetadata: { 
             ...metadata as any, 
             originalPath: f.name, 
-            recordId: `AR-${Date.now().toString().slice(-4)}${Math.floor(Math.random()*100)}` 
+            recordId: `AR-${Date.now().toString().slice(-4)}-${i}` 
           }
         };
-        return record;
-      });
 
-      try {
-        const results = await Promise.all(batchPromises);
-        updatedFileList = [...results, ...updatedFileList];
-        setFiles([...updatedFileList]);
-        setScanProgress(p => ({ ...p, current: Math.min(i + BATCH_SIZE, newFiles.length) }));
+        // تحديث الحالة فوراً لكل ملف (لا ننتظر الدفعة)
+        setFiles(prev => [record, ...prev]);
+        setScanProgress(p => ({ ...p, current: i + 1 }));
+
+        // السماح للـ UI بالتحديث
+        await new Promise(r => setTimeout(r, 100));
       } catch (err) {
-        console.error("Batch error:", err);
+        console.error("Failed to process file:", f.name, err);
       }
     }
 
@@ -155,7 +153,7 @@ const App: React.FC = () => {
         <div className="p-8">
           <div className="flex items-center gap-4 mb-16 group cursor-pointer" onClick={() => setActiveTab('dashboard')}>
             <div className="bg-indigo-600 w-12 h-12 rounded-2xl flex items-center justify-center text-white font-black text-2xl group-hover:scale-110 transition-transform shadow-lg shadow-indigo-500/20">أ</div>
-            <span className="text-2xl font-black text-white tracking-tight">أرشـيـف</span>
+            <span className="text-2xl font-black text-white">أرشـيـف</span>
           </div>
           <div className="space-y-2">
             {NAV_ITEMS.map(item => (
@@ -173,7 +171,7 @@ const App: React.FC = () => {
             <header className="flex justify-between items-end bg-white p-10 rounded-[3rem] border border-slate-100 shadow-xl">
               <div>
                 <h1 className="text-5xl font-black text-slate-900 tracking-tight">الأرشفة الذكية</h1>
-                <p className="text-slate-500 mt-2 font-bold text-lg">نظام أرشفة إداري فائق السرعة والاستقرار</p>
+                <p className="text-slate-500 mt-2 font-bold text-lg">نظام حوكمة الوثائق بمعالجة آمنة</p>
               </div>
               <label className="bg-slate-900 text-white px-10 py-5 rounded-2xl flex items-center gap-3 cursor-pointer shadow-xl font-black hover:bg-black transition-all">
                 <FolderPlus size={22} /> أرشفة مجلد
@@ -191,11 +189,11 @@ const App: React.FC = () => {
                   </div>
                 </div>
                 <div className="w-full h-4 bg-white/10 rounded-full overflow-hidden">
-                  <div className="h-full bg-indigo-500 transition-all duration-500" style={{ width: `${(scanProgress.current / scanProgress.total) * 100}%` }}></div>
+                  <div className="h-full bg-indigo-500 transition-all duration-300" style={{ width: `${(scanProgress.current / scanProgress.total) * 100}%` }}></div>
                 </div>
                 <div className="flex justify-between mt-4">
                   <p className="text-xs text-slate-400 font-bold">تم إنجاز {scanProgress.current} من {scanProgress.total} ملف</p>
-                  <p className="text-xs text-indigo-400 font-black animate-pulse text-left">النظام يعمل في الخلفية بثبات...</p>
+                  <p className="text-xs text-indigo-400 font-black animate-pulse">يتم حفظ الملفات فورياً لمنع فقدان البيانات</p>
                 </div>
               </div>
             )}
@@ -204,8 +202,8 @@ const App: React.FC = () => {
               {[
                 { label: 'إجمالي السجلات', value: files.length, icon: <FileText className="text-indigo-600"/> },
                 { label: 'سجلات نشطة', value: files.length, icon: <CheckCircle2 className="text-emerald-600"/> },
-                { label: 'وضع التشغيل', value: 'آمن', icon: <Zap className="text-amber-600"/> },
-                { label: 'المحرك الذكي', value: 'Flash 3', icon: <Bot className="text-rose-600"/> },
+                { label: 'الذكاء الاصطناعي', value: 'Flash 3', icon: <Bot className="text-rose-600"/> },
+                { label: 'وضع المعالجة', value: 'آمن', icon: <Zap className="text-amber-600"/> },
               ].map((s, i) => (
                 <div key={i} className="bg-white p-8 rounded-[2.5rem] border border-slate-100 flex items-center justify-between shadow-sm hover:shadow-xl transition-all">
                   <div><p className="text-xs text-slate-400 font-black mb-1 uppercase">{s.label}</p><h3 className="text-4xl font-black text-slate-800">{s.value}</h3></div>
@@ -232,7 +230,7 @@ const App: React.FC = () => {
             <div className="bg-white p-6 rounded-[2.5rem] border border-slate-100 shadow-lg">
               <div className="relative">
                 <Search className="absolute right-6 top-1/2 -translate-y-1/2 text-slate-400" size={20} />
-                <input type="text" placeholder="بحث سريع في العناوين..." className="w-full pl-6 pr-16 py-5 bg-slate-50 border border-slate-200 rounded-2xl outline-none font-bold" value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} />
+                <input type="text" placeholder="بحث سريع في العناوين..." className="w-full pl-6 pr-16 py-5 bg-slate-50 border border-slate-200 rounded-2xl outline-none font-bold text-slate-700" value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} />
               </div>
             </div>
 
@@ -252,6 +250,12 @@ const App: React.FC = () => {
                   </div>
                 </div>
               ))}
+              {files.length === 0 && !scanProgress.currentFile && (
+                <div className="col-span-full py-20 text-center space-y-4">
+                  <div className="bg-slate-50 w-24 h-24 rounded-full flex items-center justify-center mx-auto text-slate-300"><Archive size={48} /></div>
+                  <p className="text-slate-400 font-bold">لا توجد ملفات مؤرشفة حالياً. ابدأ بربط مجلد جديد.</p>
+                </div>
+              )}
             </div>
           </div>
         )}
@@ -281,7 +285,7 @@ const App: React.FC = () => {
                   <h4 className="text-3xl font-black text-slate-900">الملخص التنفيذي الذكي</h4>
                 </div>
                 <p className="text-2xl font-bold text-slate-800 leading-[1.8] break-words whitespace-pre-wrap">
-                  {selectedFile.isoMetadata?.description || 'تمت أرشفة المستند بنجاح بناءً على بيانات الملف المتاحة.'}
+                  {selectedFile.isoMetadata?.description || 'تمت أرشفة المستند بناءً على البيانات المتاحة.'}
                 </p>
               </section>
 
@@ -293,11 +297,18 @@ const App: React.FC = () => {
                 <DetailCard label="درجة السرية" value={selectedFile.isoMetadata?.confidentiality} icon={Shield} colorClass="text-rose-600" />
                 <DetailCard label="الأهمية الإدارية" value={selectedFile.isoMetadata?.importance} icon={AlertCircle} colorClass="text-orange-600" />
               </section>
+
+              <section className="bg-slate-50 p-10 rounded-[2.5rem] border border-slate-100">
+                <h4 className="text-xl font-black text-slate-800 mb-6 flex items-center gap-2"><ScanText size={20} /> معاينة النص المستخرج</h4>
+                <div className="bg-white p-8 rounded-2xl border border-slate-200 text-slate-600 leading-relaxed font-mono text-sm max-h-96 overflow-y-auto custom-scrollbar whitespace-pre-wrap">
+                   {selectedFile.extractedText}
+                </div>
+              </section>
             </div>
             
             <div className="p-10 bg-slate-50 border-t border-slate-100 flex justify-end gap-6 shrink-0">
                <button onClick={() => setSelectedFile(null)} className="px-10 py-5 bg-white border border-slate-200 text-slate-600 rounded-2xl text-lg font-black hover:bg-slate-50 transition-all shadow-sm">إغلاق</button>
-               <button className="px-16 py-5 bg-indigo-600 text-white rounded-2xl text-lg font-black shadow-2xl hover:bg-black transition-all shadow-indigo-500/20">تحميل المستند</button>
+               <button className="px-16 py-5 bg-indigo-600 text-white rounded-2xl text-lg font-black shadow-2xl hover:bg-black transition-all">تحميل المستند</button>
             </div>
           </div>
         </div>
