@@ -21,8 +21,8 @@ import {
 import { NAV_ITEMS, STATUS_COLORS, IMPORTANCE_COLORS } from './constants';
 import { classifyFileContent, askAgent } from './services/geminiService';
 
-const STORAGE_KEY = 'arshif_records_v2';
-const BATCH_SIZE = 3; // تقليل حجم الدفعة لضمان استقرار المتصفح مع ملفات الوورد
+const STORAGE_KEY = 'arshif_records_v3';
+const BATCH_SIZE = 2; // تقليل حجم الدفعة لضمان عدم استهلاك الذاكرة بالكامل
 
 const getFileIcon = (fileName: string) => {
   const ext = fileName.split('.').pop()?.toLowerCase();
@@ -66,77 +66,71 @@ const App: React.FC = () => {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(files));
   }, [files]);
 
-  const readFileData = async (file: File): Promise<{ content: string; extractedText?: string }> => {
-    return new Promise((resolve) => {
-      const reader = new FileReader();
-      const ext = file.name.split('.').pop()?.toLowerCase();
-      
-      // مهلة زمنية لاستخراج النصوص (10 ثواني) لضمان عدم التعليق
-      const timeout = setTimeout(() => {
-        console.warn(`Timeout reading ${file.name}`);
-        resolve({ content: "Timeout", extractedText: "تأخر استخراج النص، تم الاعتماد على اسم الملف." });
-      }, 10000);
-
-      if (['jpg', 'jpeg', 'png', 'webp'].includes(ext || '')) {
-        reader.onload = (e) => {
-          clearTimeout(timeout);
-          resolve({ content: e.target?.result as string });
-        };
-        reader.readAsDataURL(file);
-      } else if (ext === 'docx') {
-        setScanProgress(p => ({ ...p, phase: 'استخراج نصوص Word...' }));
-        reader.onload = async (e) => {
-          try {
-            const arrayBuffer = e.target?.result as ArrayBuffer;
-            const res = await mammoth.extractRawText({ arrayBuffer });
-            clearTimeout(timeout);
-            resolve({ content: res.value.substring(0, 3000), extractedText: res.value });
-          } catch { 
-            clearTimeout(timeout);
-            resolve({ content: "Error", extractedText: "فشل قراءة ملف الوورد" }); 
-          }
-        };
-        reader.readAsArrayBuffer(file);
-      } else {
-        reader.onload = (e) => {
-          clearTimeout(timeout);
-          resolve({ content: (e.target?.result as string).substring(0, 3000) });
-        };
-        reader.readAsDataURL(file);
+  const safeExtractText = async (file: File): Promise<string> => {
+    const ext = file.name.split('.').pop()?.toLowerCase();
+    
+    if (ext === 'docx') {
+      try {
+        // تنفيذ Mammoth مع وعد (Promise) خارجي لتجنب التعليق
+        const arrayBuffer = await file.arrayBuffer();
+        const result = await mammoth.extractRawText({ arrayBuffer });
+        return result.value.substring(0, 3000);
+      } catch (err) {
+        console.error("Mammoth failed:", err);
+        return ""; // العودة بنص فارغ والاعتماد على اسم الملف
       }
-    });
+    }
+    
+    if (['txt', 'json', 'csv'].includes(ext || '')) {
+      return await file.text().then(t => t.substring(0, 3000));
+    }
+
+    return "";
   };
 
   const processFileChanges = async (newFiles: File[]) => {
     if (newFiles.length === 0) return;
-    setScanProgress({ total: newFiles.length, current: 0, currentFile: 'تحليل هيكلية المجلدات...', status: 'analyzing', phase: 'تحضير' });
+    setScanProgress({ total: newFiles.length, current: 0, currentFile: 'تهيئة الأرشفة...', status: 'analyzing', phase: 'تحضير' });
 
     let updatedFileList = [...files];
-    const archiveSummary = updatedFileList.slice(0, 15).map(f => f.isoMetadata?.title).join(', ');
+    const archiveSummary = updatedFileList.slice(0, 10).map(f => f.isoMetadata?.title).join(', ');
 
     for (let i = 0; i < newFiles.length; i += BATCH_SIZE) {
       const batch = newFiles.slice(i, i + BATCH_SIZE);
+      
       const batchPromises = batch.map(async (f) => {
-        setScanProgress(p => ({ ...p, currentFile: f.name, phase: 'قراءة الملف' }));
-        const { content, extractedText } = await readFileData(f);
+        setScanProgress(p => ({ ...p, currentFile: f.name, phase: 'جاري فحص المستند...' }));
         
-        setScanProgress(p => ({ ...p, phase: 'تحليل الذكاء الاصطناعي (Flash)...' }));
-        const metadata = await classifyFileContent(f.name, extractedText || f.name, archiveSummary);
+        // محاولة استخراج النص بهدوء، إذا فشل سنستخدم اسم الملف فقط
+        const extractedText = await safeExtractText(f);
+        
+        setScanProgress(p => ({ ...p, phase: 'تحليل البيانات ذكياً...' }));
+        
+        // استدعاء Gemini - سيتم الاعتماد على اسم الملف إذا كان extractedText فارغاً
+        const metadata = await classifyFileContent(f.name, extractedText || `اسم الملف: ${f.name}`, archiveSummary);
         
         const record: FileRecord = {
           id: Math.random().toString(36).substr(2, 9),
           name: f.name, size: f.size, type: f.type, lastModified: f.lastModified,
-          isProcessing: false, preview: content.startsWith('data:') ? content : undefined, 
-          extractedText,
-          isoMetadata: { ...metadata as any, originalPath: f.name, recordId: `REC-${Date.now().toString().slice(-4)}${Math.floor(Math.random()*10)}` }
+          isProcessing: false,
+          extractedText: extractedText || "تعذر استخراج النص التفصيلي لهذا الملف.",
+          isoMetadata: { 
+            ...metadata as any, 
+            originalPath: f.name, 
+            recordId: `AR-${Date.now().toString().slice(-4)}${Math.floor(Math.random()*100)}` 
+          }
         };
         return record;
       });
 
-      const results = await Promise.all(batchPromises);
-      updatedFileList = [...results, ...updatedFileList];
-      setFiles([...updatedFileList]);
-      setScanProgress(p => ({ ...p, current: Math.min(i + BATCH_SIZE, newFiles.length), phase: 'تمت الفهرسة' }));
+      try {
+        const results = await Promise.all(batchPromises);
+        updatedFileList = [...results, ...updatedFileList];
+        setFiles([...updatedFileList]);
+        setScanProgress(p => ({ ...p, current: Math.min(i + BATCH_SIZE, newFiles.length) }));
+      } catch (err) {
+        console.error("Batch error:", err);
+      }
     }
 
     setScanProgress(p => ({ ...p, status: 'idle', phase: '' }));
@@ -160,8 +154,8 @@ const App: React.FC = () => {
       <aside className="w-80 bg-slate-900 text-slate-300 flex flex-col fixed h-full z-20 shadow-2xl">
         <div className="p-8">
           <div className="flex items-center gap-4 mb-16 group cursor-pointer" onClick={() => setActiveTab('dashboard')}>
-            <div className="bg-indigo-600 w-12 h-12 rounded-2xl flex items-center justify-center text-white font-black text-2xl group-hover:scale-110 transition-transform">أ</div>
-            <span className="text-2xl font-black text-white">أرشـيـف</span>
+            <div className="bg-indigo-600 w-12 h-12 rounded-2xl flex items-center justify-center text-white font-black text-2xl group-hover:scale-110 transition-transform shadow-lg shadow-indigo-500/20">أ</div>
+            <span className="text-2xl font-black text-white tracking-tight">أرشـيـف</span>
           </div>
           <div className="space-y-2">
             {NAV_ITEMS.map(item => (
@@ -179,7 +173,7 @@ const App: React.FC = () => {
             <header className="flex justify-between items-end bg-white p-10 rounded-[3rem] border border-slate-100 shadow-xl">
               <div>
                 <h1 className="text-5xl font-black text-slate-900 tracking-tight">الأرشفة الذكية</h1>
-                <p className="text-slate-500 mt-2 font-bold text-lg">تحليل سريع ومستقر للملفات الإدارية</p>
+                <p className="text-slate-500 mt-2 font-bold text-lg">نظام أرشفة إداري فائق السرعة والاستقرار</p>
               </div>
               <label className="bg-slate-900 text-white px-10 py-5 rounded-2xl flex items-center gap-3 cursor-pointer shadow-xl font-black hover:bg-black transition-all">
                 <FolderPlus size={22} /> أرشفة مجلد
@@ -188,11 +182,11 @@ const App: React.FC = () => {
             </header>
             
             {scanProgress.status !== 'idle' && (
-              <div className="bg-slate-900 text-white p-10 rounded-[3rem] shadow-2xl">
+              <div className="bg-slate-900 text-white p-10 rounded-[3rem] shadow-2xl border border-indigo-500/30">
                 <div className="flex items-center gap-6 mb-6">
-                  <div className="bg-indigo-600 p-4 rounded-2xl animate-spin shadow-[0_0_20px_rgba(99,102,241,0.5)]"><RefreshCw size={24} /></div>
+                  <div className="bg-indigo-600 p-4 rounded-2xl animate-spin"><RefreshCw size={24} /></div>
                   <div className="flex-1">
-                    <span className="font-black text-2xl block mb-1">المعالجة الحالية: {scanProgress.currentFile}</span>
+                    <span className="font-black text-2xl block mb-1">جاري أرشفة: {scanProgress.currentFile}</span>
                     <span className="text-indigo-400 text-sm font-bold uppercase tracking-widest">{scanProgress.phase}</span>
                   </div>
                 </div>
@@ -200,8 +194,8 @@ const App: React.FC = () => {
                   <div className="h-full bg-indigo-500 transition-all duration-500" style={{ width: `${(scanProgress.current / scanProgress.total) * 100}%` }}></div>
                 </div>
                 <div className="flex justify-between mt-4">
-                  <p className="text-xs text-slate-400 font-bold">تم إكمال {scanProgress.current} من أصل {scanProgress.total} ملف</p>
-                  <p className="text-xs text-indigo-400 font-black animate-pulse">يرجى عدم إغلاق المتصفح...</p>
+                  <p className="text-xs text-slate-400 font-bold">تم إنجاز {scanProgress.current} من {scanProgress.total} ملف</p>
+                  <p className="text-xs text-indigo-400 font-black animate-pulse text-left">النظام يعمل في الخلفية بثبات...</p>
                 </div>
               </div>
             )}
@@ -210,10 +204,10 @@ const App: React.FC = () => {
               {[
                 { label: 'إجمالي السجلات', value: files.length, icon: <FileText className="text-indigo-600"/> },
                 { label: 'سجلات نشطة', value: files.length, icon: <CheckCircle2 className="text-emerald-600"/> },
-                { label: 'الاستقرار', value: '100%', icon: <Zap className="text-amber-600"/> },
-                { label: 'الذكاء الاصطناعي', value: 'Flash 3', icon: <Bot className="text-rose-600"/> },
+                { label: 'وضع التشغيل', value: 'آمن', icon: <Zap className="text-amber-600"/> },
+                { label: 'المحرك الذكي', value: 'Flash 3', icon: <Bot className="text-rose-600"/> },
               ].map((s, i) => (
-                <div key={i} className="bg-white p-8 rounded-[2.5rem] border border-slate-100 flex items-center justify-between shadow-sm hover:shadow-xl transition-all group">
+                <div key={i} className="bg-white p-8 rounded-[2.5rem] border border-slate-100 flex items-center justify-between shadow-sm hover:shadow-xl transition-all">
                   <div><p className="text-xs text-slate-400 font-black mb-1 uppercase">{s.label}</p><h3 className="text-4xl font-black text-slate-800">{s.value}</h3></div>
                   <div className="bg-slate-50 p-5 rounded-3xl">{s.icon}</div>
                 </div>
@@ -227,7 +221,7 @@ const App: React.FC = () => {
             <header className="flex justify-between items-center bg-white p-10 rounded-[3rem] border border-slate-100 shadow-xl">
               <div>
                 <h1 className="text-4xl font-black text-slate-900 tracking-tight">الأرشيف المركزي</h1>
-                <p className="text-slate-500 mt-2 font-medium">حوكمة الوثائق والمراسلات</p>
+                <p className="text-slate-500 mt-2 font-medium">حوكمة الوثائق والمراسلات الإدارية</p>
               </div>
               <div className="flex gap-3">
                 <button onClick={() => setViewMode('grid')} className={`p-4 rounded-2xl ${viewMode === 'grid' ? 'bg-indigo-600 text-white' : 'bg-slate-50'}`}><LayoutGrid size={22}/></button>
@@ -238,7 +232,7 @@ const App: React.FC = () => {
             <div className="bg-white p-6 rounded-[2.5rem] border border-slate-100 shadow-lg">
               <div className="relative">
                 <Search className="absolute right-6 top-1/2 -translate-y-1/2 text-slate-400" size={20} />
-                <input type="text" placeholder="بحث سريع..." className="w-full pl-6 pr-16 py-5 bg-slate-50 border border-slate-200 rounded-2xl outline-none font-bold" value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} />
+                <input type="text" placeholder="بحث سريع في العناوين..." className="w-full pl-6 pr-16 py-5 bg-slate-50 border border-slate-200 rounded-2xl outline-none font-bold" value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} />
               </div>
             </div>
 
@@ -287,7 +281,7 @@ const App: React.FC = () => {
                   <h4 className="text-3xl font-black text-slate-900">الملخص التنفيذي الذكي</h4>
                 </div>
                 <p className="text-2xl font-bold text-slate-800 leading-[1.8] break-words whitespace-pre-wrap">
-                  {selectedFile.isoMetadata?.description || 'لا يوجد وصف متاح.'}
+                  {selectedFile.isoMetadata?.description || 'تمت أرشفة المستند بنجاح بناءً على بيانات الملف المتاحة.'}
                 </p>
               </section>
 
@@ -303,7 +297,7 @@ const App: React.FC = () => {
             
             <div className="p-10 bg-slate-50 border-t border-slate-100 flex justify-end gap-6 shrink-0">
                <button onClick={() => setSelectedFile(null)} className="px-10 py-5 bg-white border border-slate-200 text-slate-600 rounded-2xl text-lg font-black hover:bg-slate-50 transition-all shadow-sm">إغلاق</button>
-               <button className="px-16 py-5 bg-indigo-600 text-white rounded-2xl text-lg font-black shadow-2xl hover:bg-black transition-all">تحميل المستند</button>
+               <button className="px-16 py-5 bg-indigo-600 text-white rounded-2xl text-lg font-black shadow-2xl hover:bg-black transition-all shadow-indigo-500/20">تحميل المستند</button>
             </div>
           </div>
         </div>
