@@ -52,7 +52,8 @@ export interface ISOMetadata {
   recordId: string;
   originalPath: string;
   title: string;
-  description: string;
+  description: string; // الغرض المختصر
+  executiveSummary?: string; // ملخص تنفيذي شامل (الجديد)
   documentType: DocumentType;
   entity: string;
   sender?: string;         // المرسل
@@ -62,6 +63,7 @@ export interface ISOMetadata {
   incomingNumber?: string; // رقم الوارد
   outgoingNumber?: string; // رقم الصادر
   year: number;
+  fullDate?: string;       // التاريخ الكامل الموجود في الخطاب
   importance: Importance;
   confidentiality: Confidentiality;
   retentionPolicy: string; // Name of the applied policy
