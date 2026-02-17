@@ -18,42 +18,24 @@ const extractJson = (text: string) => {
   }
 };
 
-async function retryWithBackoff<T>(
-  fn: () => Promise<T>,
-  retries = 1,
-  delay = 1000
-): Promise<T> {
-  try {
-    return await fn();
-  } catch (error: any) {
-    if (retries > 0) {
-      await new Promise(resolve => setTimeout(resolve, delay));
-      return retryWithBackoff(fn, retries - 1, delay * 2);
-    }
-    throw error;
-  }
-}
-
 export const classifyFileContent = async (
   fileName: string, 
-  content: string, 
-  otherFilesSummary: string = ""
+  content: string
 ): Promise<Partial<ISOMetadata>> => {
   const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
   
-  const prompt = `أنت محرك فهرسة ذكي (ISO 15489). حلل المستند:
-  - الاسم: ${fileName}
-  - المحتوى: ${content.substring(0, 2000)}
-  
-  استخرج JSON بالحقول: 
-  title, description, sender, recipient, category, documentType, importance (عادي، مهم، حرج), confidentiality (عام، سري).`;
+  // استخدام برومبت مباشر ومختصر جداً لتسريع الاستجابة
+  const prompt = `أرشفة ISO 15489 للمستند: ${fileName}. المحتوى: ${content.substring(0, 1500)}. 
+  أرجع JSON فقط: {title, description, sender, recipient, category, documentType, importance, confidentiality}`;
 
   try {
-    const response = await retryWithBackoff<GenerateContentResponse>(() => ai.models.generateContent({
+    const response = await ai.models.generateContent({
       model: "gemini-3-flash-preview",
       contents: prompt,
       config: {
         responseMimeType: "application/json",
+        // تعطيل ميزانية التفكير لزيادة السرعة (Flash Mode)
+        thinkingConfig: { thinkingBudget: 0 },
         responseSchema: {
           type: Type.OBJECT,
           properties: {
@@ -69,21 +51,19 @@ export const classifyFileContent = async (
           required: ["title"],
         }
       }
-    }));
+    });
+    
     const result = extractJson(response.text || "{}");
     return { 
       ...result, 
       status: ArchiveStatus.ACTIVE, 
-      createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString()
     };
   } catch (error) {
-    console.error("Classification error:", error);
-    // إرجاع بيانات أساسية لضمان عدم توقف النظام
+    console.error("Fast classification failed:", error);
     return { 
       title: fileName, 
-      documentType: DocumentType.OTHER, 
-      description: "تمت الفهرسة آلياً بناءً على اسم الملف بسبب تعذر تحليل المحتوى.",
+      description: "تمت الفهرسة السريعة بالاسم.",
       status: ArchiveStatus.ACTIVE 
     };
   }
@@ -91,7 +71,7 @@ export const classifyFileContent = async (
 
 export const askAgent = async (query: string, filesContext: string): Promise<string> => {
   const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-  const prompt = `أنت خبير أرشفة. أجب بناءً على: ${filesContext}\nالسؤال: ${query}`;
+  const prompt = `أنت خبير أرشفة. السياق: ${filesContext}\nالسؤال: ${query}`;
   try {
     const response = await ai.models.generateContent({
       model: "gemini-3-flash-preview",
