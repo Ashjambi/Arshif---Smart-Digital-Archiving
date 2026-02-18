@@ -1,5 +1,5 @@
 
-import { GoogleGenAI, Type } from "@google/genai";
+import { GoogleGenAI, Type, HarmCategory, HarmBlockThreshold } from "@google/genai";
 import { ArchiveStatus, ISOMetadata, DocumentType } from "../types";
 
 /**
@@ -8,17 +8,12 @@ import { ArchiveStatus, ISOMetadata, DocumentType } from "../types";
 const parseGeminiJSON = (text: string): any => {
   if (!text) return null;
   try {
-    // 1. المحاولة المباشرة
     return JSON.parse(text);
   } catch (e) {
     try {
-      // 2. إزالة Markdown وعلامات الكود
       let clean = text.replace(/```json/g, "").replace(/```/g, "").trim();
-      
-      // 3. البحث عن حدود الكائن {}
       const firstBrace = clean.indexOf('{');
       const lastBrace = clean.lastIndexOf('}');
-      
       if (firstBrace !== -1 && lastBrace !== -1) {
         clean = clean.substring(firstBrace, lastBrace + 1);
         return JSON.parse(clean);
@@ -32,7 +27,21 @@ const parseGeminiJSON = (text: string): any => {
 };
 
 /**
- * تحليل الوثائق باستخدام Gemini 3 Flash مع فرض Schema
+ * دالة مساعدة لإعادة المحاولة في حال فشل الاتصال
+ */
+const retryOperation = async <T>(operation: () => Promise<T>, retries = 3, delay = 2000): Promise<T> => {
+  try {
+    return await operation();
+  } catch (error) {
+    if (retries <= 0) throw error;
+    console.warn(`Retrying operation... (${retries} attempts left)`);
+    await new Promise(resolve => setTimeout(resolve, delay));
+    return retryOperation(operation, retries - 1, delay * 2);
+  }
+};
+
+/**
+ * تحليل الوثائق باستخدام Gemini 3 Flash مع إعدادات أمان مخصصة
  */
 export const analyzeSpecificFile = async (
   fileName: string, 
@@ -44,23 +53,31 @@ export const analyzeSpecificFile = async (
   const model = "gemini-3-flash-preview";
   
   const promptText = `
-  قم بتحليل الوثيقة المرفقة "${fileName}" واستخرج البيانات الوصفية بدقة للأرشفة.
-  المخرجات المطلوبة (JSON فقط):
+  بصفتك خبير أرشفة (ISO 15489)، قم بتحليل الملف "${fileName}" واستخرج البيانات التالية بصيغة JSON حصراً:
   - title: عنوان الوثيقة.
-  - executiveSummary: ملخص تنفيذي دقيق باللغة العربية يشرح محتوى الوثيقة.
-  - documentType: نوع الوثيقة (عقد، خطاب، فاتورة، تقرير...).
-  - sender: الجهة المرسلة.
-  - recipient: الجهة المستلمة.
-  - fullDate: التاريخ المذكور في الوثيقة.
+  - executiveSummary: ملخص تنفيذي دقيق وشامل بالعربية.
+  - documentType: نوع الوثيقة (عقد، فاتورة، خطاب، تقرير، هوية، أخرى).
+  - sender: المرسل.
+  - recipient: المستلم.
+  - fullDate: التاريخ.
   - importance: (عادي، مهم، سري).
-  - incomingNumber: رقم الوارد إن وجد.
+  - confidentiality: (عام، داخلي، سري).
+  - incomingNumber: رقم القيد الوارد.
   `;
 
   const parts: any[] = isBinary && mimeType 
     ? [{ inlineData: { mimeType, data: contentOrBase64 } }, { text: promptText }]
-    : [{ text: promptText }, { text: `محتوى الملف:\n${contentOrBase64.substring(0, 20000)}` }];
+    : [{ text: promptText }, { text: `محتوى الملف:\n${contentOrBase64.substring(0, 25000)}` }];
 
-  try {
+  // إعدادات الأمان لمنع الحظر الخاطئ للمستندات
+  const safetySettings = [
+    { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.BLOCK_NONE },
+    { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold: HarmBlockThreshold.BLOCK_NONE },
+    { category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold: HarmBlockThreshold.BLOCK_NONE },
+    { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.BLOCK_NONE },
+  ];
+
+  const generate = async () => {
     const response = await ai.models.generateContent({
       model: model,
       contents: [{ parts }],
@@ -81,45 +98,53 @@ export const analyzeSpecificFile = async (
             confidentiality: { type: Type.STRING },
             entity: { type: Type.STRING }
           },
-          required: ["title", "executiveSummary", "documentType"]
+          required: ["title", "executiveSummary"]
         },
-        systemInstruction: "أنت نظام أرشفة ذكي (ISO 15489). استخرج البيانات بدقة متناهية وباللغة العربية."
+        safetySettings: safetySettings,
+        systemInstruction: "أنت نظام أرشفة رقمي ذكي. استخرج البيانات بدقة وحيادية."
       }
     });
+    return response;
+  };
 
+  try {
+    const response = await retryOperation(generate);
     const result = parseGeminiJSON(response.text);
-    if (!result) throw new Error("فشل استخراج البيانات الهيكلية");
-    
+    if (!result) throw new Error("فشل قراءة هيكل البيانات (JSON Invalid)");
     return result;
-
   } catch (error) {
-    console.error("Analysis Failed:", error);
+    console.error("Gemini Critical Analysis Failed:", error);
     return {
       title: fileName,
-      executiveSummary: "تعذر التحليل الآلي لهذا الملف حالياً. يرجى التحقق من الملف أو إدخال البيانات يدوياً.",
-      documentType: DocumentType.OTHER
+      executiveSummary: "فشل التحليل الذكي: يرجى التحقق من اتصال الإنترنت أو صلاحية الملف. (Error: Analysis Timeout or Block)",
+      documentType: DocumentType.OTHER,
+      status: ArchiveStatus.IN_PROCESS
     };
   }
 };
 
 /**
- * الوكيل الذكي (Chat Agent)
+ * الوكيل الذكي (Chat Agent) مع إعادة المحاولة
  */
 export const askAgent = async (query: string, archiveContext: string): Promise<string> => {
-  try {
-    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-    // استخدام نموذج Pro للإجابات المعقدة إذا توفر، أو Flash للسرعة
+  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+  
+  const generate = async () => {
     const response = await ai.models.generateContent({
       model: "gemini-3-flash-preview",
-      contents: [{ parts: [{ text: `قائمة الملفات المتوفرة في الأرشيف:\n${archiveContext}\n\nسؤال المستخدم: ${query}` }] }],
+      contents: [{ parts: [{ text: `معلومات الأرشيف:\n${archiveContext}\n\nطلب المستخدم: ${query}` }] }],
       config: {
-        systemInstruction: "أنت مساعد أرشفة ذكي. أجب على أسئلة المستخدم بناءً على الملفات الموجودة في السياق فقط. كن دقيقاً ومساعداً."
+        systemInstruction: "أنت مساعد أرشفة ذكي. أجب بدقة بناءً على الملفات المتوفرة."
       }
     });
-    return response.text || "عذراً، لم أستطع تكوين إجابة.";
+    return response.text;
+  };
+
+  try {
+    const text = await retryOperation(generate, 2);
+    return text || "عذراً، لا توجد إجابة متاحة.";
   } catch (error) {
-    console.error("Agent Error:", error);
-    return "واجهت مشكلة في الاتصال بمحرك الذكاء الاصطناعي.";
+    return "عذراً، حدث خطأ في الاتصال بالوكيل الذكي.";
   }
 };
 
@@ -128,13 +153,13 @@ export async function* askAgentStream(query: string, archiveContext: string) {
   try {
     const responseStream = await ai.models.generateContentStream({
       model: "gemini-3-flash-preview",
-      contents: [{ parts: [{ text: `سياق الأرشيف:\n${archiveContext}\n\nسؤال: ${query}` }] }],
-      config: { systemInstruction: "أنت مساعد أرشيف. أجب بإيجاز ودقة." }
+      contents: [{ parts: [{ text: `الأرشيف:\n${archiveContext}\n\nسؤال: ${query}` }] }],
+      config: { systemInstruction: "أنت مساعد أرشيف." }
     });
     for await (const chunk of responseStream) {
       yield chunk.text;
     }
   } catch (e) {
-    yield "خطأ في الاتصال.";
+    yield "خطأ في الاتصال بالخادم.";
   }
 }
