@@ -21,7 +21,7 @@ import {
   FileRecord, ArchiveStatus, AuditAction, AuditLog, ChatMessage, DocumentType, Importance, Confidentiality, ISOMetadata
 } from '../types';
 import { NAV_ITEMS, STATUS_COLORS } from '../constants';
-import { askAgent, classifyFileContent } from '../services/geminiService';
+import { askAgent, classifyFileContent, askAgentStream, analyzeSpecificFile } from '../services/geminiService';
 
 // مفاتيح تخزين ثابتة ومحمية
 const STORAGE_KEY = 'ARSHIF_PLATFORM_FILES_V2';
@@ -114,8 +114,6 @@ const App: React.FC = () => {
   }, []);
 
   useEffect(() => {
-    // Note: originalFile cannot be saved to localStorage (it's binary), so files will lose their binary data on refresh.
-    // We strip originalFile before saving to storage.
     const filesToSave = files.map(({ originalFile, ...rest }) => rest);
     localStorage.setItem(STORAGE_KEY, JSON.stringify(filesToSave));
     localStorage.setItem(AUDIT_KEY, JSON.stringify(auditLogs));
@@ -127,10 +125,28 @@ const App: React.FC = () => {
     }
   }, [files, auditLogs, integrations, connectedFolderName]);
 
+  // Helper to read file as Base64 for API
+  const fileToBase64 = (file: File): Promise<string> => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.readAsDataURL(file);
+      reader.onload = () => {
+        const result = reader.result as string;
+        // Remove "data:mime/type;base64," prefix for API
+        const base64Data = result.split(',')[1]; 
+        resolve(base64Data);
+      };
+      reader.onerror = error => reject(error);
+    });
+  };
+
   // --- Background AI Processor (The Queue Worker) ---
   useEffect(() => {
     const processQueue = async () => {
+      // Find the first file that is 'isProcessing'
       const pendingFile = files.find(f => f.isProcessing);
+      
+      // If no file pending OR we are already busy analyzing, stop.
       if (!pendingFile || isAnalyzingRef.current) return;
 
       isAnalyzingRef.current = true;
@@ -138,20 +154,37 @@ const App: React.FC = () => {
       try {
         console.log(`Starting AI analysis for: ${pendingFile.name}`);
         
-        let contentToAnalyze = '';
-        if (pendingFile.content && pendingFile.content.length > 20) {
-            contentToAnalyze = pendingFile.content;
+        let analysis;
+        
+        // Strategy: If we have the original file (Blob), we send it as binary to Gemini (Multimodal).
+        // If not (e.g. refreshed page and lost blob), we fall back to text content or metadata.
+        if (pendingFile.originalFile && pendingFile.size < 20 * 1024 * 1024) { // Limit to 20MB for browser safety
+            try {
+                const base64Data = await fileToBase64(pendingFile.originalFile);
+                analysis = await analyzeSpecificFile(
+                    pendingFile.name, 
+                    base64Data, 
+                    pendingFile.originalFile.type, 
+                    true // isBinary
+                );
+            } catch (e) {
+                console.warn("Binary read failed, falling back to text/meta");
+                // Fallback inside the catch
+                analysis = await analyzeSpecificFile(pendingFile.name, pendingFile.content || "Metadata only", undefined, false);
+            }
         } else {
-            contentToAnalyze = `
-            تحليل بناءً على البيانات الوصفية فقط (المحتوى غير متاح للنص):
-            اسم الملف: ${pendingFile.name}
-            نوع الملف: ${pendingFile.type}
-            الحجم: ${pendingFile.size} بايت
-            تاريخ الملف: ${new Date(pendingFile.lastModified).toLocaleDateString('ar-SA')}
-            `;
+             // Text based or fallback
+             let contentToAnalyze = pendingFile.content || '';
+             if (!contentToAnalyze || contentToAnalyze.length < 10) {
+                 contentToAnalyze = `
+                 (تحليل بناءً على البيانات الوصفية):
+                 اسم الملف: ${pendingFile.name}
+                 النوع: ${pendingFile.type}
+                 الحجم: ${pendingFile.size}
+                 `;
+             }
+             analysis = await analyzeSpecificFile(pendingFile.name, contentToAnalyze, undefined, false);
         }
-
-        const analysis = await classifyFileContent(pendingFile.name, contentToAnalyze);
 
         setFiles(prevFiles => prevFiles.map(f => {
           if (f.id === pendingFile.id) {
@@ -162,15 +195,14 @@ const App: React.FC = () => {
                 ...f.isoMetadata!,
                 title: analysis.title || f.name,
                 description: analysis.description || "ملف مؤرشف",
-                executiveSummary: analysis.executiveSummary || "لا يتوفر ملخص تنفيذي لهذا الملف.",
+                executiveSummary: analysis.executiveSummary || "لا يتوفر ملخص تنفيذي.",
                 documentType: analysis.documentType as DocumentType || DocumentType.OTHER,
                 importance: analysis.importance as Importance || Importance.NORMAL,
                 confidentiality: analysis.confidentiality as Confidentiality || Confidentiality.INTERNAL,
-                retentionPolicy: analysis.retentionPolicy || "افتراضي",
                 sender: analysis.sender,
                 recipient: analysis.recipient,
                 incomingNumber: analysis.incomingNumber,
-                outgoingNumber: analysis.outgoingNumber, // Mapped from External Ref
+                outgoingNumber: analysis.outgoingNumber,
                 fullDate: analysis.fullDate,
                 year: analysis.year || new Date().getFullYear(),
                 updatedAt: new Date().toISOString()
@@ -183,13 +215,14 @@ const App: React.FC = () => {
         setAuditLogs(prev => [{
             id: Date.now().toString(),
             action: AuditAction.UPDATE,
-            details: `تم تحليل بيانات الملف واستخراج الملخص التفصيلي: ${pendingFile.name}`,
+            details: `تم تحليل الملف واستخراج البيانات: ${pendingFile.name}`,
             user: 'Gemini AI Processor',
             timestamp: new Date().toISOString()
         }, ...prev]);
 
       } catch (error) {
         console.error("AI Analysis Failed:", error);
+        // CRITICAL: Mark as processed even if failed to prevent infinite loop
         setFiles(prevFiles => prevFiles.map(f => {
              if (f.id === pendingFile.id) return { ...f, isProcessing: false }; 
              return f;
@@ -205,21 +238,24 @@ const App: React.FC = () => {
   const getAgentContext = () => {
     const currentFiles = filesRef.current;
     
-    // سياق نظيف يعتمد فقط على ما تم استخراجه فعلياً
-    const fileList = currentFiles.map(f => `
-=== بطاقة الملف ===
-المعرف: ${f.isoMetadata?.recordId}
-اسم الملف: ${f.name}
-رقم المعاملة: ${f.isoMetadata?.incomingNumber || 'غير محدد'}
---- الملخص والتفاصيل (Structured Data) ---
-${f.isoMetadata?.executiveSummary}
------------------------
+    // Optimization: Limit to top 30 most recent files + compact representation for others
+    const recentFiles = currentFiles.slice(0, 30);
+    
+    const fileList = recentFiles.map(f => `
+ID: ${f.id}
+RecordID: ${f.isoMetadata?.recordId}
+Name: ${f.name}
+Ref: ${f.isoMetadata?.incomingNumber || '-'}
+Summary: ${f.isoMetadata?.executiveSummary?.substring(0, 200)}...
 `).join('\n');
 
-    return fileList;
+    return `
+=== ARCHIVE CONTEXT (Top 30 Recent Files) ===
+${fileList}
+=============================================
+`;
   };
 
-  // Helper to send text messages
   const sendTelegramReal = async (text: string, inlineButton?: { text: string, url: string }) => {
     const { botToken, adminChatId } = integrationsRef.current.telegram.config;
     if (!integrationsRef.current.telegram.connected || !botToken || !adminChatId) return false;
@@ -247,10 +283,12 @@ ${f.isoMetadata?.executiveSummary}
     } catch (e) { return false; }
   };
 
-  // Helper to upload actual files
   const sendTelegramFile = async (file: FileRecord) => {
     const { botToken, adminChatId } = integrationsRef.current.telegram.config;
     if (!integrationsRef.current.telegram.connected || !botToken || !adminChatId) return false;
+
+    // Show processing indicator
+    await sendTelegramReal(`⏳ <b>جاري تحضير الملف:</b> ${file.name}\nالرجاء الانتظار قليلاً...`);
 
     try {
         const formData = new FormData();
@@ -258,25 +296,26 @@ ${f.isoMetadata?.executiveSummary}
         formData.append('caption', `📄 <b>${file.name}</b>\n\n✅ تم استرجاع الملف بنجاح من الأرشيف.\n#️⃣ رقم المعاملة: ${file.isoMetadata?.incomingNumber || 'غير محدد'}`);
         formData.append('parse_mode', 'HTML');
         
-        // Use the original file object if available (for PDFs, Images, etc.)
+        // Critical: Send the actual binary file
         if (file.originalFile) {
             formData.append('document', file.originalFile);
         } else {
-             // Fallback: Create blob from text content if original file is lost (e.g. after refresh)
-             const content = file.content || "عذراً، الملف الأصلي غير متاح في هذه الجلسة. تم إنشاء نسخة نصية من المحتوى المحفوظ.";
+             // Fallback if original binary is missing from memory (e.g. after refresh)
+             const content = file.content || "عذراً، الملف الأصلي غير متاح في هذه الجلسة.";
              const blob = new Blob([content], { type: 'text/plain' });
+             // Append .txt if it's purely text content
              formData.append('document', blob, `${file.name}.txt`);
         }
 
         const response = await fetch(`https://api.telegram.org/bot${botToken}/sendDocument`, {
             method: 'POST',
-            body: formData // Fetch automatically sets Content-Type to multipart/form-data with boundary
+            body: formData 
         });
 
         const data = await response.json();
-        
         if (!data.ok) {
             console.error("Telegram Upload Error:", data);
+            await sendTelegramReal(`❌ <b>خطأ في الإرسال:</b>\n${data.description}`);
             return false;
         }
 
@@ -284,6 +323,7 @@ ${f.isoMetadata?.executiveSummary}
         return true;
     } catch (e) {
         console.error("Failed to upload file to Telegram", e);
+        await sendTelegramReal(`❌ <b>خطأ فني:</b> فشل رفع الملف.`);
         return false;
     }
   };
@@ -296,9 +336,8 @@ ${f.isoMetadata?.executiveSummary}
       const { botToken, adminChatId } = integrationsRef.current.telegram.config;
       const { connected } = integrationsRef.current.telegram;
 
-      // Stop polling if we encountered too many errors (likely CORS)
       if (pollingFailuresRef.current > 3) {
-          console.warn("Telegram polling stopped due to repeated connection failures (likely CORS).");
+          console.warn("Telegram polling stopped due to repeated connection failures.");
           return; 
       }
 
@@ -310,41 +349,34 @@ ${f.isoMetadata?.executiveSummary}
       isPollingRef.current = true;
 
       try {
-        // Use the ref to get the absolute latest update ID
         const offset = lastUpdateIdRef.current + 1;
         const response = await fetch(`https://api.telegram.org/bot${botToken}/getUpdates?offset=${offset}&timeout=10`);
         
         if (!response.ok) {
-            throw new Error(`Telegram API Error: ${response.status} ${response.statusText}`);
+            throw new Error(`Telegram API Error: ${response.status}`);
         }
 
         const data = await response.json();
-
-        // Reset failure count on success
         pollingFailuresRef.current = 0;
 
         if (data.ok && data.result.length > 0) {
           for (const update of data.result) {
             lastUpdateIdRef.current = update.update_id;
             
-            // Sync this back to state/storage eventually
             setIntegrations(prev => ({
                 ...prev, 
                 telegram: { ...prev.telegram, lastUpdateId: update.update_id }
             }));
 
-            // Check if message is from admin
             if (update.message && String(update.message.chat.id) === String(adminChatId)) {
                const userText = update.message.text;
 
-               // Typing action
                await fetch(`https://api.telegram.org/bot${botToken}/sendChatAction`, {
                   method: 'POST',
                   headers: {'Content-Type': 'application/json'},
                   body: JSON.stringify({ chat_id: adminChatId, action: 'typing' })
                });
 
-               // Audit
                const newLog: AuditLog = {
                   id: Date.now().toString(),
                   action: AuditAction.VIEW,
@@ -354,38 +386,35 @@ ${f.isoMetadata?.executiveSummary}
                };
                setAuditLogs(prev => [newLog, ...prev]);
 
-               // AI Response
                const context = getAgentContext();
                const aiResponse = await askAgent(userText, context);
 
-               // Handle Downloads via Telegram (Check for the tag first)
+               // Handle File Download Command
                if (aiResponse.includes('[[DOWNLOAD:')) {
                   const match = aiResponse.match(/\[\[DOWNLOAD:(.*?)\]\]/);
-                  
-                  // Send the text part first (removing the tag)
                   const cleanText = aiResponse.replace(/\[\[DOWNLOAD:.*?\]\]/, '');
-                  await sendTelegramReal(cleanText);
+                  
+                  // Send the text part first
+                  if (cleanText.trim()) await sendTelegramReal(cleanText);
 
                   if (match && match[1]) {
-                      const targetFile = filesRef.current.find(f => f.isoMetadata?.recordId === match[1] || f.id === match[1]);
+                      const reqId = match[1].trim();
+                      const targetFile = filesRef.current.find(f => f.isoMetadata?.recordId === reqId || f.id === reqId);
+                      
                       if (targetFile) {
-                          // Execute download agent (uploads actual file)
-                          executeDownloadAgent(match[1]);
+                          await executeDownloadAgent(targetFile.id); // Re-use the visual agent wrapper
                       } else {
-                          await sendTelegramReal("⚠️ عذراً، لم يتم العثور على الملف المطلوب في النظام.");
+                          await sendTelegramReal(`⚠️ عذراً، الملف المطلوب (ID: ${reqId}) غير موجود في الأرشيف الحالي.`);
                       }
                   }
                } else {
-                   // Normal message
                    await sendTelegramReal(aiResponse);
                }
             }
           }
         }
       } catch (error: any) {
-        // Handle CORS or Network errors specifically
         if (error.name === 'TypeError' && error.message === 'Failed to fetch') {
-            console.error("Telegram Polling: Network/CORS Error. Browser blocked the request.");
             pollingFailuresRef.current += 1;
         } else {
             console.error("Telegram Polling Error", error);
@@ -418,7 +447,7 @@ ${f.isoMetadata?.executiveSummary}
     await new Promise(r => setTimeout(r, 800));
     setDownloadAgentState(prev => ({ ...prev, step: 'sending', progress: 90 }));
 
-    // UPLOAD THE ACTUAL FILE to Telegram
+    // Send the actual file using sendTelegramFile instead of just a link
     const success = await sendTelegramFile(targetFile);
 
     setDownloadAgentState(prev => ({ ...prev, step: 'completed', progress: 100 }));
@@ -479,7 +508,7 @@ ${f.isoMetadata?.executiveSummary}
         type: file.type,
         lastModified: file.lastModified,
         content: textContent.substring(0, 30000), 
-        originalFile: file, // Store the actual file object for uploading later
+        originalFile: file, 
         isProcessing: true,
         isoMetadata: {
           recordId: `ARC-${new Date().getFullYear()}-${Math.floor(1000 + Math.random() * 9000)}`,
@@ -511,24 +540,63 @@ ${f.isoMetadata?.executiveSummary}
     if (!mainChatInput.trim() || isAgentLoading) return;
     const msg = mainChatInput;
     setChatInput('');
+    
+    // Add User Message
     setMainChatMessages(prev => [...prev, { id: Date.now().toString(), role: 'user', text: msg, timestamp: new Date() }]);
     
     setIsAgentLoading(true);
     const context = getAgentContext();
-    const response = await askAgent(msg, context);
     
-    if (response.includes('[[DOWNLOAD:')) {
-        const match = response.match(/\[\[DOWNLOAD:(.*?)\]\]/);
+    // Initialize empty assistant message
+    const botMsgId = (Date.now() + 1).toString();
+    setMainChatMessages(prev => [...prev, { id: botMsgId, role: 'assistant', text: '', timestamp: new Date() }]);
+
+    let fullResponse = "";
+
+    try {
+        const stream = askAgentStream(msg, context);
+        
+        for await (const chunk of stream) {
+            fullResponse += chunk;
+            setMainChatMessages(prev => {
+                const newArr = [...prev];
+                const targetMsgIndex = newArr.findIndex(m => m.id === botMsgId);
+                if (targetMsgIndex !== -1) {
+                    newArr[targetMsgIndex] = { ...newArr[targetMsgIndex], text: fullResponse };
+                }
+                return newArr;
+            });
+        }
+    } catch (e) {
+        fullResponse = "عذراً، حدث خطأ أثناء الاتصال.";
+        setMainChatMessages(prev => {
+            const newArr = [...prev];
+            const targetMsgIndex = newArr.findIndex(m => m.id === botMsgId);
+            if (targetMsgIndex !== -1) {
+                 newArr[targetMsgIndex] = { ...newArr[targetMsgIndex], text: fullResponse };
+            }
+            return newArr;
+        });
+    }
+
+    // Check for actions after stream completes
+    if (fullResponse.includes('[[DOWNLOAD:')) {
+        const match = fullResponse.match(/\[\[DOWNLOAD:(.*?)\]\]/);
         if (match && match[1]) {
              executeDownloadAgent(match[1]);
-             const cleanResponse = response.replace(/\[\[DOWNLOAD:.*?\]\]/, '');
-             setMainChatMessages(prev => [...prev, { id: Date.now().toString(), role: 'assistant', text: cleanResponse, timestamp: new Date() }]);
-             setIsAgentLoading(false);
-             return;
+             // Clean the tag from the displayed message
+             const cleanResponse = fullResponse.replace(/\[\[DOWNLOAD:.*?\]\]/, '');
+             setMainChatMessages(prev => {
+                const newArr = [...prev];
+                const targetMsgIndex = newArr.findIndex(m => m.id === botMsgId);
+                if (targetMsgIndex !== -1) {
+                     newArr[targetMsgIndex] = { ...newArr[targetMsgIndex], text: cleanResponse };
+                }
+                return newArr;
+             });
         }
     }
 
-    setMainChatMessages(prev => [...prev, { id: Date.now().toString(), role: 'assistant', text: response, timestamp: new Date() }]);
     setIsAgentLoading(false);
   };
 
@@ -988,7 +1056,28 @@ ${f.isoMetadata?.executiveSummary}
               </div>
               <div className="p-10 bg-slate-50/50 border-t flex justify-end gap-4">
                  <button className="px-10 py-5 bg-white border-2 border-slate-200 text-slate-700 rounded-2xl font-black flex items-center gap-3 hover:bg-slate-50 transition-all"><Eye size={20} /> معاينة</button>
-                 <button className="px-12 py-5 bg-indigo-600 text-white rounded-2xl font-black flex items-center gap-3 hover:bg-indigo-700 shadow-xl shadow-indigo-100 transition-all"><Download size={20} /> تحميل آمن</button>
+                 <button 
+                    onClick={() => {
+                        if (integrations.telegram.connected) {
+                            executeDownloadAgent(selectedFile.id);
+                        } else {
+                             if (selectedFile.originalFile) {
+                                 const url = URL.createObjectURL(selectedFile.originalFile);
+                                 const a = document.createElement('a');
+                                 a.href = url;
+                                 a.download = selectedFile.name;
+                                 a.click();
+                                 URL.revokeObjectURL(url);
+                             } else {
+                                 alert("لا يمكن تحميل الملف الأصلي (فقد الاتصال بالمصدر). يرجى إعادة ربط المجلد.");
+                             }
+                        }
+                    }}
+                    className="px-12 py-5 bg-indigo-600 text-white rounded-2xl font-black flex items-center gap-3 hover:bg-indigo-700 shadow-xl shadow-indigo-100 transition-all"
+                 >
+                    {integrations.telegram.connected ? <Send size={20} /> : <Download size={20} />} 
+                    {integrations.telegram.connected ? 'إرسال لتليجرام' : 'تحميل محلي'}
+                 </button>
               </div>
            </div>
         </div>
