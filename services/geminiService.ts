@@ -2,6 +2,9 @@
 import { GoogleGenAI, Type } from "@google/genai";
 import { ArchiveStatus, ISOMetadata, DocumentType } from "../types";
 
+/**
+ * Helper to extract JSON from model response
+ */
 const extractFirstJSON = (text: string): string => {
   if (!text) return "{}";
   const startIndex = text.indexOf('{');
@@ -29,11 +32,16 @@ const extractFirstJSON = (text: string): string => {
   return "{}";
 };
 
+/**
+ * Robust generation with retry logic
+ */
 async function generateWithRetry(params: any, retries = 3): Promise<any> {
   const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
   try {
-    return await ai.models.generateContent(params);
+    const response = await ai.models.generateContent(params);
+    return response;
   } catch (error: any) {
+    console.error("Gemini API Error:", error);
     if (retries > 0 && (error.status === 503 || error.status === 429 || error.status === 500)) {
       await new Promise(r => setTimeout(r, 2000));
       return generateWithRetry(params, retries - 1);
@@ -42,13 +50,11 @@ async function generateWithRetry(params: any, retries = 3): Promise<any> {
   }
 }
 
-// Fix Error: Export missing member 'classifyFileContent' used in App.tsx
 export const classifyFileContent = async (content: string): Promise<string> => {
-  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
   try {
-    const response = await ai.models.generateContent({
+    const response = await generateWithRetry({
       model: "gemini-3-flash-preview",
-      contents: [{ parts: [{ text: `صنف نوع الوثيقة بناءً على المحتوى (عقد، مراسلة، فاتورة، تقرير، نموذج، سياسة، أخرى): ${content.substring(0, 1000)}` }] }],
+      contents: [{ parts: [{ text: `صنف نوع الوثيقة بناءً على المحتوى (عقد، مراسلة، فاتورة، تقرير، نموذج، سياسة، أخرى). أجب بكلمة واحدة فقط: ${content.substring(0, 1000)}` }] }],
     });
     return response.text?.trim() || "أخرى";
   } catch (error) {
@@ -63,25 +69,45 @@ export const analyzeSpecificFile = async (
   isBinary: boolean = false
 ): Promise<Partial<ISOMetadata>> => {
   const promptText = `
-  تحليل وثيقة (ISO 15489): استخرج البيانات بدقة كـ JSON.
-  الملف: ${fileName}
-  المطلوب: title, description, executiveSummary, documentType (عقد, مراسلة واردة, مراسلة صادرة, فاتورة, تقرير, نموذج, سياسة/إجراء, أخرى), sender, recipient, incomingNumber, outgoingNumber, fullDate (YYYY-MM-DD), importance (عادي, مهم, عالي الأهمية, حرج), confidentiality (عام, داخلي, سري, سري للغاية), entity.
+  تحليل وثيقة وفق معايير (ISO 15489). استخرج البيانات التالية بدقة كـ JSON فقط:
+  1. title: عنوان الوثيقة.
+  2. description: وصف مختصر جداً.
+  3. executiveSummary: ملخص تنفيذي شامل يشرح المحتوى والأطراف.
+  4. documentType: (عقد، مراسلة واردة، مراسلة صادرة، فاتورة، تقرير، نموذج، سياسة/إجراء، أخرى).
+  5. sender: الجهة المرسلة.
+  6. recipient: الجهة المستلمة.
+  7. incomingNumber: رقم الوارد إن وجد.
+  8. outgoingNumber: رقم الصادر إن وجد.
+  9. fullDate: التاريخ المذكور بالوثيقة (YYYY-MM-DD).
+  10. importance: (عادي، مهم، عالي الأهمية، حرج).
+  11. confidentiality: (عام، داخلي، سري، سري للغاية).
+  12. entity: الجهة التابع لها.
+  
+  اسم الملف: ${fileName}
   `;
 
   const parts: any[] = isBinary && mimeType 
     ? [{ inlineData: { mimeType, data: contentOrBase64 } }, { text: promptText }]
-    : [{ text: promptText }, { text: contentOrBase64.substring(0, 30000) }];
+    : [{ text: promptText }, { text: `المحتوى:\n${contentOrBase64.substring(0, 30000)}` }];
 
   try {
     const response = await generateWithRetry({
       model: "gemini-3-flash-preview",
       contents: [{ parts }],
-      config: { responseMimeType: "application/json" }
+      config: { 
+        responseMimeType: "application/json",
+        systemInstruction: "أنت خبير أرشفة رقمية ومحلل وثائق قانونية وإدارية."
+      }
     });
-    return JSON.parse(extractFirstJSON(response.text));
+    const jsonStr = extractFirstJSON(response.text || "{}");
+    return JSON.parse(jsonStr);
   } catch (error) {
     console.error("Analysis Error:", error);
-    throw error;
+    return {
+      title: fileName,
+      description: "فشل التحليل التلقائي للملف.",
+      executiveSummary: "لم يتمكن النظام من تحليل محتوى هذا الملف بشكل كامل."
+    };
   }
 };
 
@@ -89,15 +115,18 @@ export const askAgent = async (query: string, archiveContext: string): Promise<s
   try {
     const response = await generateWithRetry({
       model: "gemini-3-flash-preview",
-      contents: [{ parts: [{ text: `سياق الأرشيف:\n${archiveContext.slice(0, 20000)}\n\nالسؤال: ${query}` }] }],
+      contents: [{ parts: [{ text: `سياق الأرشيف الحالي:\n${archiveContext}\n\nسؤال المستخدم: ${query}` }] }],
       config: {
-        systemInstruction: "أنت مساعد أرشيف PRO. أجب باللغة العربية بناءً على السياق فقط. إذا طلب المستخدم تحميل ملف، أضف [[DOWNLOAD:ID]] في نهاية الرد."
+        systemInstruction: `أنت مساعد "أرشيف PRO" الذكي. 
+        1. أجب باللغة العربية بأسلوب مهني ومختصر.
+        2. استخدم سياق الأرشيف للإجابة على الأسئلة حول الملفات.
+        3. إذا طلب المستخدم "تحميل" أو "إرسال" ملف معين موجود في السياق، يجب أن تنهي ردك بالكود التالي: [[DOWNLOAD:RecordID]] حيث RecordID هو معرف السجل أو ID الملف.`
       }
     });
-    return response.text || "لا توجد استجابة.";
+    return response.text || "عذراً، لم أستطع فهم الطلب حالياً.";
   } catch (error) {
-    console.error("Chat Error:", error);
-    return "عذراً، حدث خطأ في معالجة طلبك.";
+    console.error("Chat Agent Error:", error);
+    return "عذراً، حدث خطأ أثناء معالجة طلبك الذكي.";
   }
 };
 
@@ -106,11 +135,16 @@ export async function* askAgentStream(query: string, archiveContext: string) {
   try {
     const responseStream = await ai.models.generateContentStream({
       model: "gemini-3-flash-preview",
-      contents: [{ parts: [{ text: `السياق:\n${archiveContext.slice(0, 25000)}\n\nالسؤال: ${query}` }] }],
-      config: { systemInstruction: "أنت مساعد أرشيف PRO ذكي." }
+      contents: [{ parts: [{ text: `سياق الأرشيف:\n${archiveContext}\n\nالسؤال: ${query}` }] }],
+      config: { 
+        systemInstruction: "أنت مساعد أرشيف PRO ذكي. أجب باللغة العربية." 
+      }
     });
-    for await (const chunk of responseStream) yield chunk.text;
+    for await (const chunk of responseStream) {
+      yield chunk.text;
+    }
   } catch (error) {
-    yield "خطأ في الاتصال بالخادم.";
+    console.error("Stream Error:", error);
+    yield "خطأ في الاتصال بخدمة الذكاء الاصطناعي.";
   }
 }
