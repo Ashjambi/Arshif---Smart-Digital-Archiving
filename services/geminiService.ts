@@ -3,32 +3,28 @@ import { GoogleGenAI, Type } from "@google/genai";
 import { ArchiveStatus, ISOMetadata, DocumentType } from "../types";
 
 /**
- * دالة ذكية لتحويل النص إلى كائن JSON مع معالجة الأخطاء الشائعة
+ * دالة ذكية لتنظيف استجابة الذكاء الاصطناعي وتحويلها إلى كائن JSON سليم.
  */
-const safeParseJSON = (text: string): any => {
+const parseGeminiJSON = (text: string): any => {
   if (!text) return null;
   try {
-    // محاولة التنظيف من علامات الماركدوان
+    // إزالة علامات الماركدوان المحتملة
     const cleaned = text.replace(/```json/g, "").replace(/```/g, "").trim();
+    // محاولة استخراج أول كائن JSON يظهر في النص
+    const firstBrace = cleaned.indexOf('{');
+    const lastBrace = cleaned.lastIndexOf('}');
+    if (firstBrace !== -1 && lastBrace !== -1) {
+      return JSON.parse(cleaned.substring(firstBrace, lastBrace + 1));
+    }
     return JSON.parse(cleaned);
   } catch (e) {
-    // البحث عن أول وآخر قوس متعرج لاستخراج الـ JSON
-    const start = text.indexOf('{');
-    const end = text.lastIndexOf('}');
-    if (start !== -1 && end !== -1) {
-      try {
-        return JSON.parse(text.substring(start, end + 1));
-      } catch (innerError) {
-        console.error("Failed to parse JSON even after cleaning", innerError);
-        return null;
-      }
-    }
+    console.error("JSON Parsing Error:", e, "Raw Text:", text);
     return null;
   }
 };
 
 /**
- * تحليل الوثائق باستخدام Gemini-3-Flash لضمان السرعة والموثوقية
+ * تحليل الوثائق باستخدام Gemini-3-Flash.
  */
 export const analyzeSpecificFile = async (
   fileName: string, 
@@ -39,13 +35,13 @@ export const analyzeSpecificFile = async (
   const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
   const model = "gemini-3-flash-preview";
   
-  const promptText = `تحليل الوثيقة "${fileName}" واستخراج البيانات الوصفية بدقة وفق معايير الأرشفة الدولية (ISO 15489).
-  المطلوب استخراج: العنوان، الوصف، ملخص تنفيذي (شامل)، نوع الوثيقة، المرسل، المستلم، الأرقام المرجعية، التاريخ، درجة الأهمية، والسرية.
-  يجب أن يكون الرد باللغة العربية وفي صيغة JSON فقط.`;
+  const promptText = `تحليل الوثيقة "${fileName}" واستخراج البيانات الوصفية كـ JSON باللغة العربية.
+  المطلوب: استخراج العنوان، ملخص تنفيذي شامل، نوع الوثيقة، المرسل، المستلم، التاريخ، الأهمية، والسرية.
+  يجب أن يكون الرد JSON سليم فقط.`;
 
   const parts: any[] = isBinary && mimeType 
     ? [{ inlineData: { mimeType, data: contentOrBase64 } }, { text: promptText }]
-    : [{ text: promptText }, { text: `محتوى النص المستخرج:\n${contentOrBase64.substring(0, 10000)}` }];
+    : [{ text: promptText }, { text: `المحتوى النصي:\n${contentOrBase64.substring(0, 15000)}` }];
 
   try {
     const response = await ai.models.generateContent({
@@ -66,34 +62,26 @@ export const analyzeSpecificFile = async (
             outgoingNumber: { type: Type.STRING },
             fullDate: { type: Type.STRING },
             importance: { type: Type.STRING },
-            confidentiality: { type: Type.STRING },
-            entity: { type: Type.STRING }
+            confidentiality: { type: Type.STRING }
           },
           required: ["title", "executiveSummary"]
         },
-        systemInstruction: "أنت خبير أرشفة رقمية محترف. رد دائماً بصيغة JSON نظيفة باللغة العربية."
+        systemInstruction: "أنت خبير أرشفة دولي وفق معيار ISO 15489. رد دائماً بصيغة JSON نظيفة وباللغة العربية."
       }
     });
     
-    const text = response.text;
-    if (!text) throw new Error("استجابة فارغة من المحرك");
-
-    const result = safeParseJSON(text);
-    if (!result) throw new Error("فشل تحويل الاستجابة إلى JSON");
-    
-    return result;
+    return parseGeminiJSON(response.text) || { title: fileName, executiveSummary: "فشل التحليل الهيكلي للبيانات." };
   } catch (error) {
-    console.error("Gemini Critical Error:", error);
+    console.error("Gemini Analysis Failure:", error);
     return {
       title: fileName,
-      description: "فشل التحليل الذكي.",
-      executiveSummary: "المعذرة، تعذر على النظام تحليل محتوى الملف حالياً. قد يكون السبب قيوداً في حجم الملف أو جودة النص. يرجى المحاولة مرة أخرى أو إدخال البيانات يدوياً."
+      executiveSummary: "تعذر تحليل الوثيقة ذكياً بسبب خطأ في الاتصال بالخادم."
     };
   }
 };
 
 /**
- * الوكيل الذكي للدردشة التفاعلية
+ * الوكيل الذكي للدردشة التفاعلية.
  */
 export const askAgent = async (query: string, archiveContext: string): Promise<string> => {
   try {
@@ -102,11 +90,12 @@ export const askAgent = async (query: string, archiveContext: string): Promise<s
       model: "gemini-3-flash-preview",
       contents: [{ parts: [{ text: `سياق الأرشيف:\n${archiveContext.substring(0, 10000)}\n\nسؤال المستخدم: ${query}` }] }],
       config: {
-        systemInstruction: "أنت مساعد أرشيف PRO ذكي. أجب باللغة العربية بأسلوب مهني وواضح."
+        systemInstruction: "أنت مساعد أرشيف PRO ذكي. أجب باللغة العربية. اذكر أسماء الملفات ومعرفاتها بوضوح عند الحاجة."
       }
     });
-    return response.text || "لا توجد استجابة حالياً.";
+    return response.text || "لم أتمكن من صياغة رد مناسب.";
   } catch (error) {
+    console.error("Agent Error:", error);
     return "عذراً، الوكيل يواجه صعوبة فنية حالياً.";
   }
 };
