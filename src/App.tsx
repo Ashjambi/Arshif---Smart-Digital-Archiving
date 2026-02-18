@@ -24,9 +24,9 @@ import {
 import { NAV_ITEMS, STATUS_COLORS } from '../constants';
 import { askAgent, askAgentStream, analyzeSpecificFile } from '../services/geminiService';
 
-const STORAGE_KEY = 'ARSHIF_V5_FILES';
-const AUDIT_KEY = 'ARSHIF_V5_AUDIT';
-const INTEGRATION_KEY = 'ARSHIF_V5_TELEGRAM';
+const STORAGE_KEY = 'ARSHIF_PLATFORM_V6_FILES';
+const AUDIT_KEY = 'ARSHIF_PLATFORM_V6_AUDIT';
+const INTEGRATION_KEY = 'ARSHIF_PLATFORM_V6_TELEGRAM';
 
 const App: React.FC = () => {
   const [activeTab, setActiveTab] = useState('dashboard');
@@ -86,14 +86,14 @@ const App: React.FC = () => {
   }, [files, auditLogs, integrations]);
 
   const handleResetArchive = () => {
-    if (window.confirm("⚠️ سيتم حذف كافة البيانات والملفات والربط نهائياً. هل أنت متأكد؟")) {
+    if (window.confirm("⚠️ انتباه: سيتم تصفير الأرشيف بالكامل وحذف كافة الملفات وإعدادات الربط. هل تود المتابعة؟")) {
       setFiles([]);
       setAuditLogs([]);
       setIntegrations({
         telegram: { connected: false, lastUpdateId: 0, config: { botToken: '', adminChatId: '' }, stats: { messagesSent: 0 } }
       });
       localStorage.clear();
-      alert("تم تصفير الأرشيف.");
+      alert("تم تصفير النظام.");
       window.location.reload();
     }
   };
@@ -107,7 +107,7 @@ const App: React.FC = () => {
     });
   };
 
-  // Background Analysis Queue
+  // Background Analysis Process
   useEffect(() => {
     const runAnalysis = async () => {
       const pending = files.find(f => f.isProcessing);
@@ -138,20 +138,20 @@ const App: React.FC = () => {
         setAuditLogs(prev => [{ 
           id: Date.now().toString(), 
           action: AuditAction.UPDATE, 
-          details: `تم تحليل الملف "${pending.name}" بنجاح.`, 
+          details: `تم الانتهاء من أرشفة وتحليل: ${pending.name}`, 
           user: 'AI Processor', 
           timestamp: new Date().toISOString() 
         }, ...prev]);
 
       } catch (e) {
-        console.error("Analysis Error:", e);
+        console.error("Analysis Queue Failure:", e);
         setFiles(prev => prev.map(f => f.id === pending.id ? { ...f, isProcessing: false } : f));
       } finally { 
         isAnalyzingRef.current = false; 
       }
     };
     
-    const interval = setInterval(runAnalysis, 4000);
+    const interval = setInterval(runAnalysis, 4500);
     return () => clearInterval(interval);
   }, [files]);
 
@@ -159,13 +159,16 @@ const App: React.FC = () => {
     const { botToken, adminChatId, connected } = integrationsRef.current.telegram;
     if (!connected || !botToken || !adminChatId) return;
     try {
-      await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
+      const res = await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ chat_id: adminChatId, text, parse_mode: 'HTML' })
       });
-      setIntegrations(p => ({...p, telegram: {...p.telegram, stats: {...p.telegram.stats, messagesSent: p.telegram.stats.messagesSent + 1}}}));
-    } catch (e) { console.error("Telegram Error", e); }
+      const data = await res.json();
+      if (data.ok) {
+        setIntegrations(p => ({...p, telegram: {...p.telegram, stats: {...p.telegram.stats, messagesSent: p.telegram.stats.messagesSent + 1}}}));
+      }
+    } catch (e) { console.error("Telegram Send Fail", e); }
   };
 
   const sendFileToTelegram = async (file: FileRecord) => {
@@ -174,7 +177,7 @@ const App: React.FC = () => {
     const fd = new FormData();
     fd.append('chat_id', adminChatId);
     fd.append('document', file.originalFile);
-    fd.append('caption', `📁 <b>الوثيقة:</b> ${file.name}\n✅ تم الاستخراج بنجاح.`);
+    fd.append('caption', `📂 <b>مستند أرشيفي:</b> ${file.name}\n✅ تم الاستخراج بنجاح.`);
     fd.append('parse_mode', 'HTML');
     try {
       const res = await fetch(`https://api.telegram.org/bot${botToken}/sendDocument`, { method: 'POST', body: fd });
@@ -183,27 +186,30 @@ const App: React.FC = () => {
     } catch { return false; }
   };
 
-  // Telegram Monitoring (Polling)
+  // Telegram Monitoring (Polling) - Fixed for immediate response
   useEffect(() => {
     const monitor = async () => {
       const { botToken, adminChatId, connected } = integrationsRef.current.telegram;
-      if (!connected || !botToken || isPollingRef.current) return;
+      if (!connected || !botToken || !adminChatId || isPollingRef.current) return;
       
       isPollingRef.current = true;
       try {
         const offset = lastUpdateIdRef.current + 1;
-        const res = await fetch(`https://api.telegram.org/bot${botToken}/getUpdates?offset=${offset}&timeout=20`);
+        const res = await fetch(`https://api.telegram.org/bot${botToken}/getUpdates?offset=${offset}&timeout=15`);
         const data = await res.json();
         
-        if (data.ok && data.result.length > 0) {
+        if (data.ok && data.result && data.result.length > 0) {
           for (const upd of data.result) {
+            // Update offset locally and in state
             lastUpdateIdRef.current = upd.update_id;
             setIntegrations(p => ({ ...p, telegram: { ...p.telegram, lastUpdateId: upd.update_id } }));
             
             if (upd.message && String(upd.message.chat.id) === String(adminChatId) && upd.message.text) {
               const query = upd.message.text;
+              
+              // Context preparation
               const context = filesRef.current.slice(0, 15).map(f => 
-                `[ID:${f.id}] الاسم:${f.name} الملخص:${f.isoMetadata?.executiveSummary?.substring(0, 120)}`
+                `[ID:${f.id}] ${f.name}: ${f.isoMetadata?.executiveSummary?.substring(0, 150)}`
               ).join('\n');
               
               const reply = await askAgent(query, context);
@@ -214,7 +220,7 @@ const App: React.FC = () => {
                 const target = filesRef.current.find(f => f.id === id || f.isoMetadata?.recordId === id);
                 if (clean.trim()) await sendToTelegram(clean);
                 if (target) await sendFileToTelegram(target);
-                else await sendToTelegram("⚠️ لم أتمكن من العثور على الملف في الأرشيف المتاح.");
+                else await sendToTelegram("⚠️ لم أتمكن من العثور على الملف المطلوب حالياً.");
               } else {
                 await sendToTelegram(reply);
               }
@@ -222,18 +228,21 @@ const App: React.FC = () => {
               setAuditLogs(prev => [{ 
                 id: Date.now().toString(), 
                 action: AuditAction.VIEW, 
-                details: `استعلام تليجرام: ${query}`, 
+                details: `دردشة تليجرام: ${query.substring(0, 30)}...`, 
                 user: 'Telegram Admin', 
                 timestamp: new Date().toISOString() 
               }, ...prev]);
             }
           }
         }
-      } catch (e) { console.error("Poll Error", e); }
-      finally { isPollingRef.current = false; }
+      } catch (e) {
+        console.error("Telegram Polling Error", e);
+      } finally {
+        isPollingRef.current = false;
+      }
     };
     
-    const interval = setInterval(monitor, 4000);
+    const interval = setInterval(monitor, 3500);
     return () => clearInterval(interval);
   }, [integrations.telegram.connected]);
 
@@ -255,8 +264,8 @@ const App: React.FC = () => {
         originalFile: f, isProcessing: true,
         isoMetadata: {
           recordId: `ARC-${Date.now().toString().slice(-4)}-${i}`, title: f.name, 
-          description: "جاري المزامنة...", documentType: DocumentType.OTHER, 
-          entity: "مزامنة محلية", importance: Importance.NORMAL,
+          description: "مزامنة جارية...", documentType: DocumentType.OTHER, 
+          entity: "مزامنة يدوية", importance: Importance.NORMAL,
           confidentiality: Confidentiality.INTERNAL, status: ArchiveStatus.IN_PROCESS,
           createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), 
           year: new Date().getFullYear(), originalPath: f.name, retentionPolicy: "معياري",
@@ -264,12 +273,12 @@ const App: React.FC = () => {
         }
       });
       setScanProgress(Math.round(((i + 1) / sel.length) * 100));
-      await new Promise(r => setTimeout(r, 40));
+      await new Promise(r => setTimeout(r, 30));
     }
     
     setFiles(prev => [...newRecords, ...prev]);
     setIsScanning(false);
-    setAuditLogs(prev => [{ id: Date.now().toString(), action: AuditAction.SYNC, details: `مزامنة ${newRecords.length} وثائق.`, user: 'مدير النظام', timestamp: new Date().toISOString() }, ...prev]);
+    setAuditLogs(prev => [{ id: Date.now().toString(), action: AuditAction.SYNC, details: `إضافة ${newRecords.length} ملفات للأرشيف.`, user: 'مدير النظام', timestamp: new Date().toISOString() }, ...prev]);
   };
 
   const handleChat = async () => {
@@ -290,41 +299,41 @@ const App: React.FC = () => {
         setMainChatMessages(p => p.map(m => m.id === botId ? { ...m, text: full } : m));
       }
     } catch { 
-      setMainChatMessages(p => p.map(m => m.id === botId ? { ...m, text: "خطأ في الاتصال بالوكيل الذكي." } : m));
+      setMainChatMessages(p => p.map(m => m.id === botId ? { ...m, text: "عذراً، الوكيل يواجه صعوبة في الاستجابة." } : m));
     }
     setIsAgentLoading(false);
   };
 
   const handleVerifyTelegram = async () => {
     const { botToken, adminChatId } = integrations.telegram.config;
-    if (!botToken || !adminChatId) return alert("يرجى إكمال البيانات.");
+    if (!botToken || !adminChatId) return alert("يرجى تزويد النظام ببيانات تليجرام كاملة.");
     
     setIsVerifying(true);
     try {
       const res = await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ chat_id: adminChatId, text: "🚀 <b>تم تفعيل الربط!</b>\nالنظام جاهز للعمل.", parse_mode: 'HTML' })
+        body: JSON.stringify({ chat_id: adminChatId, text: "🟢 <b>نجاح الربط:</b>\nتم توصيل أرشيف PRO بنجاح.\nيمكنك الآن إرسال الاستفسارات.", parse_mode: 'HTML' })
       });
       const data = await res.json();
       if (data.ok) {
         setIntegrations(p => ({ ...p, telegram: { ...p.telegram, connected: true } }));
         alert("تم الربط بنجاح!");
-      } else alert("خطأ: " + data.description);
+      } else alert("فشل التحقق: " + data.description);
     } catch { alert("خطأ في الشبكة."); }
     finally { setIsVerifying(false); }
   };
 
   return (
     <div className="min-h-screen flex bg-[#fbfcfd]" dir="rtl">
-      {/* Sidebar */}
+      {/* Sidebar Navigation */}
       <aside className="w-80 bg-slate-900 text-slate-300 flex flex-col fixed h-full z-20 shadow-2xl border-l border-slate-800">
         <div className="p-8">
           <div className="flex items-center gap-4 mb-12">
             <div className="bg-indigo-600 w-12 h-12 rounded-2xl flex items-center justify-center text-white font-black text-2xl shadow-lg">أ</div>
             <div>
               <span className="text-2xl font-black text-white block">أرشـيـف PRO</span>
-              <span className="text-[10px] text-indigo-400 font-bold uppercase tracking-widest">Enterprise Archiving</span>
+              <span className="text-[10px] text-indigo-400 font-bold uppercase tracking-widest">ISO 15489 Management</span>
             </div>
           </div>
           <nav className="space-y-2">
@@ -335,6 +344,9 @@ const App: React.FC = () => {
             ))}
           </nav>
         </div>
+        <div className="mt-auto p-8 border-t border-slate-800 text-slate-500 text-[10px] font-bold text-center">
+            نظام الأرشفة الذكي V6.0
+        </div>
       </aside>
 
       <main className="flex-1 mr-80 p-10 overflow-y-auto">
@@ -342,12 +354,12 @@ const App: React.FC = () => {
           <div className="space-y-8 animate-saas max-w-7xl mx-auto">
             <header className="flex justify-between items-center bg-white p-8 rounded-[2.5rem] border shadow-sm">
               <div>
-                <h1 className="text-4xl font-black text-slate-900">نظرة عامة</h1>
-                <p className="text-slate-400 font-bold mt-1">حالة الأرشفة الذكية وتفاعلات الوكيل.</p>
+                <h1 className="text-4xl font-black text-slate-900">الرئيسية</h1>
+                <p className="text-slate-400 font-bold mt-1">نظرة شاملة على الأرشيف والوكيل الذكي.</p>
               </div>
               <div className="flex gap-4">
-                 <div className="px-6 py-3 bg-indigo-50 text-indigo-600 rounded-2xl font-bold flex items-center gap-2 border border-indigo-100">
-                    <Zap size={20} className="animate-pulse" /> المحرك نشط
+                 <div className="px-6 py-3 bg-indigo-50 text-indigo-600 rounded-2xl font-bold flex items-center gap-2 border border-indigo-100 shadow-sm">
+                    <Zap size={20} className="animate-pulse" /> Gemini AI محرك نشط
                  </div>
               </div>
             </header>
@@ -356,22 +368,22 @@ const App: React.FC = () => {
               <div className="lg:col-span-2 space-y-8">
                 <div className="grid grid-cols-2 gap-6">
                   <div className="bg-white p-8 rounded-[2rem] border shadow-sm flex items-center justify-between">
-                    <div><p className="text-xs font-black text-slate-400 uppercase mb-2">إجمالي الوثائق</p><h3 className="text-4xl font-black text-slate-800">{files.length}</h3></div>
-                    <div className="bg-slate-50 p-5 rounded-2xl text-indigo-600"><Database size={28} /></div>
+                    <div><p className="text-xs font-black text-slate-400 uppercase mb-2">إجمالي السجلات</p><h3 className="text-4xl font-black text-slate-800">{files.length}</h3></div>
+                    <div className="bg-slate-50 p-5 rounded-2xl text-indigo-600 shadow-inner"><Database size={28} /></div>
                   </div>
                   <div className="bg-white p-8 rounded-[2rem] border shadow-sm flex items-center justify-between">
-                    <div><p className="text-xs font-black text-slate-400 uppercase mb-2">تفاعل تليجرام</p><h3 className="text-2xl font-black text-blue-600">{integrations.telegram.stats.messagesSent}</h3></div>
-                    <div className="bg-slate-50 p-5 rounded-2xl text-blue-600"><TelegramIcon size={28} /></div>
+                    <div><p className="text-xs font-black text-slate-400 uppercase mb-2">نشاط تليجرام</p><h3 className="text-2xl font-black text-blue-600">{integrations.telegram.stats.messagesSent} تفاعل</h3></div>
+                    <div className="bg-slate-50 p-5 rounded-2xl text-blue-600 shadow-inner"><TelegramIcon size={28} /></div>
                   </div>
                 </div>
 
-                <div className="bg-slate-900 rounded-[2.5rem] shadow-2xl overflow-hidden flex flex-col h-[500px]">
+                <div className="bg-slate-900 rounded-[2.5rem] shadow-2xl overflow-hidden flex flex-col h-[520px]">
                    <div className="p-6 border-b border-white/10 flex items-center justify-between bg-slate-800/50 text-white">
-                      <div className="flex items-center gap-3"><Bot size={24} className="text-indigo-400" /><div><h3 className="font-black text-sm">مساعد الأرشفة</h3><p className="text-indigo-400 text-[10px]">GEMINI AGENT ONLINE</p></div></div>
+                      <div className="flex items-center gap-3"><Bot size={24} className="text-indigo-400" /><div><h3 className="font-black text-sm">مساعد الأرشفة الذكي</h3><p className="text-indigo-400 text-[10px] tracking-widest">AGENT ACTIVE</p></div></div>
                    </div>
                    <div className="flex-1 overflow-y-auto p-6 space-y-4">
                       {mainChatMessages.map(msg => (
-                         <div key={msg.id} className={`max-w-[85%] p-4 rounded-2xl text-sm ${msg.role === 'assistant' ? 'bg-slate-800 text-slate-200 self-start' : 'bg-indigo-600 text-white mr-auto self-end'}`}>
+                         <div key={msg.id} className={`max-w-[85%] p-4 rounded-2xl text-sm leading-relaxed ${msg.role === 'assistant' ? 'bg-slate-800 text-slate-200 self-start' : 'bg-indigo-600 text-white mr-auto self-end'}`}>
                             {msg.text}
                             <div className="text-[9px] mt-2 opacity-40 font-bold">{new Date(msg.timestamp).toLocaleTimeString()}</div>
                          </div>
@@ -379,9 +391,9 @@ const App: React.FC = () => {
                       {isAgentLoading && <div className="p-4 bg-slate-800 rounded-2xl w-24 flex justify-center"><Loader2 className="animate-spin text-indigo-500" size={16} /></div>}
                    </div>
                    <div className="p-4 bg-slate-800 border-t border-white/10">
-                      <div className="flex gap-2 bg-slate-900 p-2 rounded-xl border border-white/5">
-                         <input type="text" className="flex-1 bg-transparent border-none outline-none text-white px-3 py-2 text-sm" placeholder="اسأل الوكيل عن أي وثيقة..." value={mainChatInput} onChange={e => setChatInput(e.target.value)} onKeyPress={e => e.key === 'Enter' && handleChat()} />
-                         <button onClick={handleChat} className="bg-indigo-600 p-2 rounded-lg text-white"><Send size={18} /></button>
+                      <div className="flex gap-2 bg-slate-900 p-2 rounded-xl border border-white/5 shadow-inner">
+                         <input type="text" className="flex-1 bg-transparent border-none outline-none text-white px-3 py-2 text-sm font-bold" placeholder="اسأل الوكيل عن أي وثيقة..." value={mainChatInput} onChange={e => setChatInput(e.target.value)} onKeyPress={e => e.key === 'Enter' && handleChat()} />
+                         <button onClick={handleChat} className="bg-indigo-600 p-2 rounded-lg text-white hover:bg-indigo-500 transition-all shadow-md active:scale-95"><Send size={18} /></button>
                       </div>
                    </div>
                 </div>
@@ -389,14 +401,15 @@ const App: React.FC = () => {
 
               <div className="bg-white p-8 rounded-[2.5rem] border shadow-sm flex flex-col">
                 <h3 className="text-lg font-black text-slate-800 mb-6 flex items-center gap-2"><History size={20} className="text-indigo-600" /> النشاط الأخير</h3>
-                <div className="space-y-6 flex-1 overflow-y-auto max-h-[600px] pr-2">
+                <div className="space-y-6 flex-1 overflow-y-auto max-h-[600px] pr-2 custom-scroll">
                   {auditLogs.map(log => (
                     <div key={log.id} className="border-r-2 border-slate-100 pr-4 py-1">
-                      <p className="text-xs font-black text-indigo-600">{log.action}</p>
+                      <p className="text-xs font-black text-indigo-600 uppercase tracking-tighter">{log.action}</p>
                       <p className="text-sm font-bold text-slate-700 mt-1">{log.details}</p>
-                      <p className="text-[10px] text-slate-400">{new Date(log.timestamp).toLocaleTimeString()}</p>
+                      <p className="text-[10px] text-slate-400 font-bold mt-1">{new Date(log.timestamp).toLocaleTimeString()}</p>
                     </div>
                   ))}
+                  {auditLogs.length === 0 && <p className="text-center text-slate-300 font-bold py-10 italic">لا يوجد نشاط مسجل بعد.</p>}
                 </div>
               </div>
             </div>
@@ -406,36 +419,49 @@ const App: React.FC = () => {
         {activeTab === 'archive' && (
           <div className="space-y-8 animate-saas max-w-7xl mx-auto">
             <header className="flex justify-between items-center bg-white p-8 rounded-[2.5rem] border shadow-sm">
-              <div><h1 className="text-4xl font-black text-slate-900">الأرشيف المركزي</h1><p className="text-slate-400 font-bold">إدارة وحفظ السجلات الرقمية.</p></div>
+              <div><h1 className="text-4xl font-black text-slate-900">الأرشيف المركزي</h1><p className="text-slate-400 font-bold">إدارة السجلات الرقمية المصنفة.</p></div>
               <div className="flex gap-4">
-                <div className="relative w-80">
+                <div className="relative w-80 shadow-sm rounded-2xl overflow-hidden">
                   <Search className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
-                  <input className="w-full pr-12 pl-4 py-4 bg-slate-50 border-2 border-transparent focus:border-indigo-500 rounded-2xl outline-none font-bold text-sm" placeholder="بحث..." value={searchQuery} onChange={e => setSearchQuery(e.target.value)} />
+                  <input className="w-full pr-12 pl-4 py-4 bg-slate-50 border-2 border-transparent focus:border-indigo-500 outline-none font-bold text-sm" placeholder="بحث بالاسم أو الرقم..." value={searchQuery} onChange={e => setSearchQuery(e.target.value)} />
                 </div>
                 <input type="file" ref={fileInputRef} className="hidden" multiple onChange={handleSyncFiles} />
-                <button onClick={() => fileInputRef.current?.click()} className="bg-indigo-600 text-white px-8 py-4 rounded-2xl font-black flex items-center gap-3 hover:bg-indigo-700 shadow-xl transition-all">
+                <button onClick={() => fileInputRef.current?.click()} className="bg-indigo-600 text-white px-8 py-4 rounded-2xl font-black flex items-center gap-3 hover:bg-indigo-700 shadow-xl transition-all active:scale-95">
                   <Link2 size={24} /> تحديد ملف متزامن
                 </button>
               </div>
             </header>
 
             {isScanning && (
-              <div className="bg-indigo-600 text-white p-10 rounded-[2.5rem] shadow-2xl flex flex-col items-center gap-6 animate-in fade-in zoom-in">
+              <div className="bg-indigo-600 text-white p-10 rounded-[2.5rem] shadow-2xl flex flex-col items-center gap-6 animate-pulse">
                 <Loader2 className="animate-spin" size={48} />
                 <h3 className="text-2xl font-black">جاري المزامنة... {scanProgress}%</h3>
-                <p>{currentScanningFile}</p>
+                <p className="font-bold opacity-80">{currentScanningFile}</p>
               </div>
             )}
 
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
-              {files.filter(f => f.name.includes(searchQuery)).map(file => (
-                <div key={file.id} onClick={() => setSelectedFileId(file.id)} className="bg-white p-8 rounded-[2.5rem] border shadow-sm hover:shadow-2xl transition-all cursor-pointer relative group">
-                  {file.isProcessing && <div className="absolute top-6 left-6 animate-pulse bg-indigo-50 text-indigo-600 px-3 py-1 rounded-full text-[10px] font-black border border-indigo-100">تحليل ذكي...</div>}
-                  <div className="bg-slate-50 w-16 h-16 rounded-2xl flex items-center justify-center mb-6 group-hover:bg-indigo-600 group-hover:text-white transition-all"><FileText size={28} /></div>
-                  <h3 className="text-xl font-black text-slate-800 truncate mb-1">{file.isoMetadata?.title || file.name}</h3>
-                  <p className="text-[10px] text-indigo-500 font-black tracking-widest uppercase mb-4">{file.isoMetadata?.recordId}</p>
+              {files.filter(f => f.name.toLowerCase().includes(searchQuery.toLowerCase())).map(file => (
+                <div key={file.id} onClick={() => setSelectedFileId(file.id)} className="bg-white p-8 rounded-[2.5rem] border shadow-sm hover:shadow-2xl transition-all cursor-pointer relative group overflow-hidden active:scale-98">
+                  <div className="absolute top-0 right-0 w-24 h-24 bg-indigo-50/50 rounded-full -mr-12 -mt-12 group-hover:scale-150 transition-all duration-700"></div>
+                  {file.isProcessing && <div className="absolute top-6 left-6 animate-pulse bg-indigo-50 text-indigo-600 px-3 py-1 rounded-full text-[10px] font-black border border-indigo-100 flex items-center gap-1 shadow-sm"><Loader2 size={10} className="animate-spin" /> تحليل...</div>}
+                  <div className="bg-slate-50 w-16 h-16 rounded-2xl flex items-center justify-center mb-6 group-hover:bg-indigo-600 group-hover:text-white transition-all shadow-sm"><FileText size={28} /></div>
+                  <h3 className="text-xl font-black text-slate-800 truncate mb-1 relative z-10">{file.isoMetadata?.title || file.name}</h3>
+                  <p className="text-[10px] text-indigo-500 font-black tracking-widest uppercase mb-4 relative z-10">{file.isoMetadata?.recordId}</p>
+                  <div className="flex items-center justify-between pt-4 border-t border-slate-50 relative z-10">
+                      <span className="px-3 py-1 bg-slate-100 rounded-full text-[10px] font-black text-slate-500 uppercase">{file.isoMetadata?.documentType || 'غير مصنف'}</span>
+                      <span className="text-[10px] text-slate-400 font-bold">{new Date(file.lastModified).toLocaleDateString()}</span>
+                  </div>
                 </div>
               ))}
+              
+              {files.length === 0 && !isScanning && (
+                <div className="col-span-full py-40 flex flex-col items-center justify-center bg-white rounded-[3rem] border-2 border-dashed border-slate-200 opacity-60">
+                   <div className="bg-slate-50 p-10 rounded-full mb-6 text-slate-300 shadow-inner"><HardDrive size={80} /></div>
+                   <h3 className="text-2xl font-black text-slate-800">الأرشيف فارغ</h3>
+                   <p className="text-slate-400 font-bold mt-2 text-center">قم بمزامنة ملفاتك لبدء التصنيف والتحليل الذكي.</p>
+                </div>
+              )}
             </div>
           </div>
         )}
@@ -444,24 +470,24 @@ const App: React.FC = () => {
           <div className="max-w-4xl mx-auto animate-saas">
             <header className="mb-10 flex justify-between items-center bg-white p-8 rounded-[2.5rem] border shadow-sm">
               <h1 className="text-5xl font-black text-slate-900">الإعدادات</h1>
-              <button onClick={() => { setIsSaving(true); setTimeout(() => setIsSaving(false), 1000); }} className="bg-indigo-600 text-white px-8 py-4 rounded-2xl font-black flex items-center gap-3 hover:bg-indigo-700 shadow-xl">
-                {isSaving ? <Loader2 className="animate-spin" /> : <Save size={20} />} حفظ
+              <button onClick={() => { setIsSaving(true); setTimeout(() => setIsSaving(false), 1000); }} className="bg-indigo-600 text-white px-8 py-4 rounded-2xl font-black flex items-center gap-3 hover:bg-indigo-700 shadow-xl transition-all active:scale-95">
+                {isSaving ? <Loader2 className="animate-spin" /> : <Save size={20} />} حفظ التغييرات
               </button>
             </header>
 
             <div className="bg-white rounded-[3rem] border shadow-xl flex min-h-[500px] overflow-hidden">
               <aside className="w-64 bg-slate-50 border-l p-8 space-y-2">
-                <button onClick={() => setSettingsTab('general')} className={`w-full text-right px-6 py-4 rounded-2xl font-bold ${settingsTab === 'general' ? 'bg-white text-indigo-600 shadow-md' : 'text-slate-500'}`}>الإدارة</button>
-                <button onClick={() => setSettingsTab('telegram')} className={`w-full text-right px-6 py-4 rounded-2xl font-bold ${settingsTab === 'telegram' ? 'bg-white text-indigo-600 shadow-md' : 'text-slate-500'}`}>تكامل تليجرام</button>
+                <button onClick={() => setSettingsTab('general')} className={`w-full text-right px-6 py-4 rounded-2xl font-bold transition-all ${settingsTab === 'general' ? 'bg-white text-indigo-600 shadow-md' : 'text-slate-500 hover:bg-slate-100'}`}>الإدارة العامة</button>
+                <button onClick={() => setSettingsTab('telegram')} className={`w-full text-right px-6 py-4 rounded-2xl font-bold transition-all ${settingsTab === 'telegram' ? 'bg-white text-indigo-600 shadow-md' : 'text-slate-500 hover:bg-slate-100'}`}>تكامل تليجرام</button>
               </aside>
               <div className="flex-1 p-12">
                 {settingsTab === 'general' && (
                   <div className="space-y-12 animate-in fade-in">
                     <section>
-                      <h3 className="text-2xl font-black mb-6 flex items-center gap-3 text-slate-800"><RotateCcw size={24} className="text-indigo-600" /> مسح البيانات</h3>
+                      <h3 className="text-2xl font-black mb-6 flex items-center gap-3 text-slate-800"><RotateCcw size={24} className="text-indigo-600" /> إدارة البيانات</h3>
                       <div className="bg-rose-50 p-8 rounded-[2rem] border border-rose-100 border-dashed">
-                        <p className="text-rose-700 font-bold mb-8">سيتم حذف كافة الملفات وسجلات النشاط نهائياً. لا يمكن التراجع عن هذا الإجراء.</p>
-                        <button onClick={handleResetArchive} className="bg-rose-600 text-white px-8 py-5 rounded-2xl font-black flex items-center gap-3 hover:bg-rose-700 transition-all shadow-xl">
+                        <p className="text-rose-700 font-bold mb-8 text-sm">تصفير النظام سيؤدي إلى حذف كافة السجلات والملفات المرفوعة نهائياً. يرجى التأكد من رغبتك في ذلك.</p>
+                        <button onClick={handleResetArchive} className="bg-rose-600 text-white px-8 py-5 rounded-2xl font-black flex items-center gap-3 hover:bg-rose-700 transition-all shadow-xl shadow-rose-200">
                           <Trash2 size={20} /> تصفير الأرشيف بالكامل
                         </button>
                       </div>
@@ -470,12 +496,18 @@ const App: React.FC = () => {
                 )}
                 {settingsTab === 'telegram' && (
                   <div className="space-y-8 animate-in fade-in">
-                    <h3 className="text-2xl font-black mb-6 flex items-center gap-3 text-slate-800"><TelegramIcon size={24} className="text-blue-500" /> إعدادات الربط</h3>
+                    <h3 className="text-2xl font-black mb-6 flex items-center gap-3 text-slate-800"><TelegramIcon size={24} className="text-blue-500" /> إعدادات الوكيل الخارجي</h3>
                     <div className="space-y-6 max-w-lg">
-                      <div><label className="text-xs font-black block mb-2 text-slate-500 uppercase mr-1">Bot Token</label><input type="password" placeholder="توكن البوت..." className="w-full p-4 bg-slate-50 rounded-2xl outline-none font-mono text-xs" value={integrations.telegram.config.botToken} onChange={e => setIntegrations({ ...integrations, telegram: { ...integrations.telegram, config: { ...integrations.telegram.config, botToken: e.target.value } } })} /></div>
-                      <div><label className="text-xs font-black block mb-2 text-slate-500 uppercase mr-1">Admin Chat ID</label><input type="text" placeholder="معرف الدردشة..." className="w-full p-4 bg-slate-50 rounded-2xl outline-none font-mono text-xs" value={integrations.telegram.config.adminChatId} onChange={e => setIntegrations({ ...integrations, telegram: { ...integrations.telegram, config: { ...integrations.telegram.config, adminChatId: e.target.value } } })} /></div>
-                      <button onClick={handleVerifyTelegram} disabled={isVerifying} className="bg-slate-900 text-white w-full p-5 rounded-2xl font-black flex items-center justify-center gap-3 hover:bg-slate-800 shadow-xl">
-                        {isVerifying ? <Loader2 className="animate-spin" /> : <ShieldCheck />} {integrations.telegram.connected ? 'متصل' : 'تفعيل الربط'}
+                      <div className="space-y-2">
+                        <label className="text-xs font-black block text-slate-500 uppercase mr-1">Bot Token</label>
+                        <input type="password" placeholder="توكن البوت..." className="w-full p-4 bg-slate-50 rounded-2xl outline-none font-mono text-xs border border-slate-200 focus:border-indigo-500 focus:bg-white transition-all shadow-sm" value={integrations.telegram.config.botToken} onChange={e => setIntegrations({ ...integrations, telegram: { ...integrations.telegram, config: { ...integrations.telegram.config, botToken: e.target.value } } })} />
+                      </div>
+                      <div className="space-y-2">
+                        <label className="text-xs font-black block text-slate-500 uppercase mr-1">Admin Chat ID</label>
+                        <input type="text" placeholder="معرف المسؤول..." className="w-full p-4 bg-slate-50 rounded-2xl outline-none font-mono text-xs border border-slate-200 focus:border-indigo-500 focus:bg-white transition-all shadow-sm" value={integrations.telegram.config.adminChatId} onChange={e => setIntegrations({ ...integrations, telegram: { ...integrations.telegram, config: { ...integrations.telegram.config, adminChatId: e.target.value } } })} />
+                      </div>
+                      <button onClick={handleVerifyTelegram} disabled={isVerifying} className="bg-slate-900 text-white w-full p-5 rounded-2xl font-black flex items-center justify-center gap-3 hover:bg-slate-800 transition-all shadow-xl disabled:opacity-50">
+                        {isVerifying ? <Loader2 className="animate-spin" /> : <ShieldCheck />} {integrations.telegram.connected ? 'متصل ومؤمن' : 'تفعيل الربط والتحقق'}
                       </button>
                     </div>
                   </div>
@@ -486,41 +518,51 @@ const App: React.FC = () => {
         )}
       </main>
 
-      {/* File Modal */}
+      {/* Detail Modal */}
       {selectedFileId && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-900/80 backdrop-blur-xl p-4 animate-in fade-in">
            <div className="bg-white w-full max-w-4xl rounded-[3rem] shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
               <div className="p-10 border-b flex justify-between items-center bg-slate-50/50">
                  <div className="flex items-center gap-6">
-                    <div className="bg-indigo-600 p-5 rounded-2xl text-white shadow-xl"><FileText size={28} /></div>
+                    <div className="bg-indigo-600 p-5 rounded-2xl text-white shadow-xl flex items-center justify-center"><FileText size={32} /></div>
                     <div>
                       <h3 className="text-3xl font-black text-slate-900 leading-tight truncate max-w-xl">{files.find(f => f.id === selectedFileId)?.isoMetadata?.title || files.find(f => f.id === selectedFileId)?.name}</h3>
-                      <p className="text-indigo-600 font-black text-sm uppercase mt-1">{files.find(f => f.id === selectedFileId)?.isoMetadata?.recordId}</p>
+                      <p className="text-indigo-600 font-black text-sm uppercase mt-1 tracking-widest">{files.find(f => f.id === selectedFileId)?.isoMetadata?.recordId}</p>
                     </div>
                  </div>
-                 <button onClick={() => setSelectedFileId(null)} className="p-4 hover:bg-rose-50 rounded-2xl border text-slate-400 hover:text-rose-600 transition-all"><X size={28} /></button>
+                 <button onClick={() => setSelectedFileId(null)} className="p-4 hover:bg-rose-50 rounded-2xl border text-slate-400 hover:text-rose-600 transition-all shadow-sm active:scale-95"><X size={28} /></button>
               </div>
-              <div className="flex-1 overflow-y-auto p-12 space-y-10">
-                 <div className="bg-indigo-50 p-8 rounded-[2rem] border border-indigo-100 shadow-sm">
-                    <h4 className="font-black text-indigo-600 mb-4 flex items-center gap-2 uppercase tracking-tighter text-sm"><Sparkles size={18} /> التحليل الذكي</h4>
-                    <p className="text-slate-800 leading-8 text-sm font-bold">{files.find(f => f.id === selectedFileId)?.isoMetadata?.executiveSummary || "جاري التحليل..."}</p>
+              <div className="flex-1 overflow-y-auto p-12 space-y-10 custom-scroll">
+                 <div className="bg-indigo-50 p-8 rounded-[2.5rem] border border-indigo-100 shadow-inner relative overflow-hidden">
+                    <div className="absolute top-0 left-0 w-2 h-full bg-indigo-500/20"></div>
+                    <h4 className="font-black text-indigo-600 mb-4 flex items-center gap-2 uppercase tracking-tighter text-xs font-bold"><Sparkles size={18} /> الملخص التنفيذي الذكي</h4>
+                    <p className="text-slate-800 leading-9 text-sm font-bold text-justify">{files.find(f => f.id === selectedFileId)?.isoMetadata?.executiveSummary || "جاري استخلاص البيانات الذكية لهذا الملف..."}</p>
                  </div>
                  <div className="grid grid-cols-2 gap-6">
-                    <div className="p-5 bg-slate-50 rounded-2xl border flex justify-between items-center shadow-sm"><span className="text-xs text-slate-400 font-black">المرسل</span><span className="font-black text-sm text-slate-700">{files.find(f => f.id === selectedFileId)?.isoMetadata?.sender || "-"}</span></div>
-                    <div className="p-5 bg-slate-50 rounded-2xl border flex justify-between items-center shadow-sm"><span className="text-xs text-slate-400 font-black">المستلم</span><span className="font-black text-sm text-slate-700">{files.find(f => f.id === selectedFileId)?.isoMetadata?.recipient || "-"}</span></div>
-                    <div className="p-5 bg-slate-50 rounded-2xl border flex justify-between items-center shadow-sm"><span className="text-xs text-slate-400 font-black">رقم الوارد</span><span className="font-black text-sm text-indigo-600">{files.find(f => f.id === selectedFileId)?.isoMetadata?.incomingNumber || "-"}</span></div>
-                    <div className="p-5 bg-slate-50 rounded-2xl border flex justify-between items-center shadow-sm"><span className="text-xs text-slate-400 font-black">التاريخ</span><span className="font-black text-sm text-slate-700">{files.find(f => f.id === selectedFileId)?.isoMetadata?.fullDate || "-"}</span></div>
+                    {[
+                      { label: 'المرسل', value: files.find(f => f.id === selectedFileId)?.isoMetadata?.sender },
+                      { label: 'المستلم', value: files.find(f => f.id === selectedFileId)?.isoMetadata?.recipient },
+                      { label: 'رقم القيد', value: files.find(f => f.id === selectedFileId)?.isoMetadata?.incomingNumber, highlight: true },
+                      { label: 'تاريخ الوثيقة', value: files.find(f => f.id === selectedFileId)?.isoMetadata?.fullDate },
+                      { label: 'الأهمية', value: files.find(f => f.id === selectedFileId)?.isoMetadata?.importance },
+                      { label: 'الحالة', value: files.find(f => f.id === selectedFileId)?.isoMetadata?.status, status: true }
+                    ].map((item, idx) => (
+                      <div key={idx} className="p-6 bg-slate-50 rounded-2xl border flex justify-between items-center shadow-sm">
+                        <span className="text-[10px] text-slate-400 font-black uppercase tracking-wider">{item.label}</span>
+                        <span className={`font-black text-sm ${item.highlight ? 'text-indigo-600 font-mono' : item.status ? 'text-emerald-600' : 'text-slate-700'}`}>{item.value || "-"}</span>
+                      </div>
+                    ))}
                  </div>
               </div>
               <div className="p-10 bg-slate-50/50 border-t flex justify-end gap-4">
-                 <button onClick={() => setSelectedFileId(null)} className="px-10 py-5 bg-white border-2 border-slate-200 rounded-2xl font-black text-slate-600">إغلاق</button>
+                 <button onClick={() => setSelectedFileId(null)} className="px-10 py-5 bg-white border-2 border-slate-200 rounded-2xl font-black text-slate-600 hover:bg-slate-100 transition-all shadow-sm">إغلاق</button>
                  <button onClick={() => {
                    const f = files.find(f => f.id === selectedFileId);
                    if (f && integrations.telegram.connected) {
-                     sendFileToTelegram(f).then(ok => alert(ok ? "تم الإرسال." : "فشل الإرسال."));
-                   } else alert("تليجرام غير مفعل.");
-                 }} className="px-12 py-5 bg-indigo-600 text-white rounded-2xl font-black shadow-xl hover:bg-indigo-700 transition-all flex items-center gap-2">
-                   <Send size={20} /> إرسال لتليجرام
+                     sendFileToTelegram(f).then(ok => alert(ok ? "تم إرسال الوثيقة لتليجرام بنجاح." : "فشل الإرسال، تحقق من اتصال البوت."));
+                   } else alert("تليجرام غير مربوط حالياً.");
+                 }} className="px-12 py-5 bg-indigo-600 text-white rounded-2xl font-black shadow-xl hover:bg-indigo-700 transition-all flex items-center gap-2 active:scale-95">
+                   <Send size={20} /> تصدير لتليجرام
                  </button>
               </div>
            </div>
