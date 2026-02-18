@@ -3,53 +3,32 @@ import { GoogleGenAI, Type } from "@google/genai";
 import { ArchiveStatus, ISOMetadata, DocumentType } from "../types";
 
 /**
- * دالة متقدمة جداً لتنظيف النصوص المستلمة من الذكاء الاصطناعي وتحويلها إلى JSON سليم.
- * تعالج مشاكل الرموز المخفية والنيولاينز غير المهربة.
+ * دالة ذكية لتحويل النص إلى كائن JSON مع معالجة الأخطاء الشائعة
  */
-const cleanAndParseJSON = (text: string): any => {
-  if (!text) return {};
+const safeParseJSON = (text: string): any => {
+  if (!text) return null;
   try {
-    // 1. محاولة استخراج الجزء المحصور بين الأقواس فقط في حال وجود نصوص خارجية
-    const firstBrace = text.indexOf('{');
-    const lastBrace = text.lastIndexOf('}');
-    let jsonContent = (firstBrace !== -1 && lastBrace !== -1) 
-      ? text.substring(firstBrace, lastBrace + 1) 
-      : text;
-
-    // 2. تنظيف الرموز التي قد تكسر الـ JSON (التحكم بالرموز غير المرئية)
-    jsonContent = jsonContent.replace(/[\u0000-\u001F\u007F-\u009F]/g, "");
-
-    return JSON.parse(jsonContent);
+    // محاولة التنظيف من علامات الماركدوان
+    const cleaned = text.replace(/```json/g, "").replace(/```/g, "").trim();
+    return JSON.parse(cleaned);
   } catch (e) {
-    console.error("JSON Clean Parse Error:", e, "Raw Text:", text);
-    // محاولة أخيرة: تنظيف يدوي للنيولاينز داخل القيم
-    try {
-      const fixed = text.replace(/\n/g, "\\n").replace(/\r/g, "\\r");
-      return JSON.parse(fixed);
-    } catch {
-      return null;
+    // البحث عن أول وآخر قوس متعرج لاستخراج الـ JSON
+    const start = text.indexOf('{');
+    const end = text.lastIndexOf('}');
+    if (start !== -1 && end !== -1) {
+      try {
+        return JSON.parse(text.substring(start, end + 1));
+      } catch (innerError) {
+        console.error("Failed to parse JSON even after cleaning", innerError);
+        return null;
+      }
     }
+    return null;
   }
 };
 
 /**
- * تنفيذ الطلبات مع نظام إعادة محاولة تصاعدي (Backoff) لضمان العمل في البيئات السحابية.
- */
-async function generateWithRetry(params: any, retries = 3): Promise<any> {
-  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-  try {
-    return await ai.models.generateContent(params);
-  } catch (error: any) {
-    if (retries > 0 && (error.status === 429 || error.status === 503 || error.status === 500)) {
-      await new Promise(r => setTimeout(r, 1500 * (4 - retries)));
-      return generateWithRetry(params, retries - 1);
-    }
-    throw error;
-  }
-}
-
-/**
- * التحليل المعياري للوثائق (ISO 15489)
+ * تحليل الوثائق باستخدام Gemini-3-Flash لضمان السرعة والموثوقية
  */
 export const analyzeSpecificFile = async (
   fileName: string, 
@@ -57,18 +36,19 @@ export const analyzeSpecificFile = async (
   mimeType?: string,
   isBinary: boolean = false
 ): Promise<Partial<ISOMetadata>> => {
+  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
   const model = "gemini-3-flash-preview";
   
-  const promptText = `حلل الوثيقة "${fileName}" واستخرج البيانات الوصفية كـ JSON.
-  مهم جداً: اجعل قيمة executiveSummary مفصلة وشاملة باللغة العربية.
-  تأكد من عدم وجود أخطاء في تنسيق JSON.`;
+  const promptText = `تحليل الوثيقة "${fileName}" واستخراج البيانات الوصفية بدقة وفق معايير الأرشفة الدولية (ISO 15489).
+  المطلوب استخراج: العنوان، الوصف، ملخص تنفيذي (شامل)، نوع الوثيقة، المرسل، المستلم، الأرقام المرجعية، التاريخ، درجة الأهمية، والسرية.
+  يجب أن يكون الرد باللغة العربية وفي صيغة JSON فقط.`;
 
   const parts: any[] = isBinary && mimeType 
     ? [{ inlineData: { mimeType, data: contentOrBase64 } }, { text: promptText }]
-    : [{ text: promptText }, { text: `النص المستخرج:\n${contentOrBase64.substring(0, 8000)}` }];
+    : [{ text: promptText }, { text: `محتوى النص المستخرج:\n${contentOrBase64.substring(0, 10000)}` }];
 
   try {
-    const response = await generateWithRetry({
+    const response = await ai.models.generateContent({
       model: model,
       contents: [{ parts }],
       config: { 
@@ -91,38 +71,43 @@ export const analyzeSpecificFile = async (
           },
           required: ["title", "executiveSummary"]
         },
-        systemInstruction: "أنت خبير أرشفة رقمية عالمي. ردك يجب أن يكون JSON سليم بنسبة 100% ولا يحتوي على أي نصوص خارج الأقواس."
+        systemInstruction: "أنت خبير أرشفة رقمية محترف. رد دائماً بصيغة JSON نظيفة باللغة العربية."
       }
     });
     
-    const parsed = cleanAndParseJSON(response.text);
-    if (!parsed) throw new Error("Parsing failed");
-    return parsed;
+    const text = response.text;
+    if (!text) throw new Error("استجابة فارغة من المحرك");
+
+    const result = safeParseJSON(text);
+    if (!result) throw new Error("فشل تحويل الاستجابة إلى JSON");
+    
+    return result;
   } catch (error) {
-    console.error("Gemini Analysis Critical Failure:", error);
+    console.error("Gemini Critical Error:", error);
     return {
       title: fileName,
       description: "فشل التحليل الذكي.",
-      executiveSummary: "لم يتمكن النظام من تحليل الوثيقة حالياً. تأكد من أن الملف يحتوي على نص مقروء وباللغة العربية، أو حاول مرة أخرى لاحقاً."
+      executiveSummary: "المعذرة، تعذر على النظام تحليل محتوى الملف حالياً. قد يكون السبب قيوداً في حجم الملف أو جودة النص. يرجى المحاولة مرة أخرى أو إدخال البيانات يدوياً."
     };
   }
 };
 
 /**
- * الوكيل الذكي للدردشة والمساعدة
+ * الوكيل الذكي للدردشة التفاعلية
  */
 export const askAgent = async (query: string, archiveContext: string): Promise<string> => {
   try {
-    const response = await generateWithRetry({
+    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+    const response = await ai.models.generateContent({
       model: "gemini-3-flash-preview",
-      contents: [{ parts: [{ text: `سياق الأرشيف الحالي:\n${archiveContext.substring(0, 10000)}\n\nسؤال المستخدم: ${query}` }] }],
+      contents: [{ parts: [{ text: `سياق الأرشيف:\n${archiveContext.substring(0, 10000)}\n\nسؤال المستخدم: ${query}` }] }],
       config: {
-        systemInstruction: "أنت مساعد أرشيف PRO ذكي. أجب باللغة العربية دائماً بوضوح ومصداقية. إذا سأل المستخدم عن ملف موجود، اذكر تفاصيله وأضف كود [[DOWNLOAD:ID]] للتحميل."
+        systemInstruction: "أنت مساعد أرشيف PRO ذكي. أجب باللغة العربية بأسلوب مهني وواضح."
       }
     });
-    return response.text || "المعذرة، لم أتمكن من معالجة الطلب حالياً.";
+    return response.text || "لا توجد استجابة حالياً.";
   } catch (error) {
-    return "عذراً، يواجه الوكيل الذكي ضغطاً في الطلبات حالياً.";
+    return "عذراً، الوكيل يواجه صعوبة فنية حالياً.";
   }
 };
 
@@ -134,20 +119,10 @@ export async function* askAgentStream(query: string, archiveContext: string) {
       contents: [{ parts: [{ text: `الأرشيف:\n${archiveContext}\n\nسؤال: ${query}` }] }],
       config: { systemInstruction: "أنت مساعد أرشيف PRO ذكي ومختصر باللغة العربية." }
     });
-    for await (const chunk of responseStream) yield chunk.text;
+    for await (const chunk of responseStream) {
+      yield chunk.text;
+    }
   } catch {
-    yield "خطأ في الاتصال بالوكيل الذكي.";
+    yield "خطأ في الاتصال بالوكيل.";
   }
 }
-
-export const classifyFileContent = async (content: string): Promise<string> => {
-  try {
-    const response = await generateWithRetry({
-      model: "gemini-3-flash-preview",
-      contents: [{ parts: [{ text: `صنف نوع الوثيقة بكلمة واحدة فقط: ${content.substring(0, 400)}` }] }],
-    });
-    return response.text?.trim() || "أخرى";
-  } catch {
-    return "أخرى";
-  }
-};
