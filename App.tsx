@@ -15,9 +15,9 @@ import {
 import { NAV_ITEMS } from './constants';
 import { askAgent, askAgentStream, analyzeSpecificFile } from './services/geminiService';
 
-const STORAGE_KEY = 'ARSHIF_PRO_V11_FILES';
-const AUDIT_KEY = 'ARSHIF_PRO_V11_AUDIT';
-const INTEG_KEY = 'ARSHIF_PRO_V11_TELEGRAM';
+const STORAGE_KEY = 'ARSHIF_PRO_V12_FILES';
+const AUDIT_KEY = 'ARSHIF_PRO_V12_AUDIT';
+const INTEG_KEY = 'ARSHIF_PRO_V12_TELEGRAM';
 
 const App: React.FC = () => {
   const [activeTab, setActiveTab] = useState('dashboard');
@@ -77,7 +77,6 @@ const App: React.FC = () => {
     });
   };
 
-  // محرك التحليل الخلفي القوي
   useEffect(() => {
     const runAnalysis = async () => {
       const pending = files.find(f => f.isProcessing);
@@ -93,8 +92,11 @@ const App: React.FC = () => {
           analysis = await analyzeSpecificFile(pending.name, pending.content || "No Content", undefined, false);
         }
         
-        // التحقق مما إذا كان التحليل قد فشل
-        const isFailure = analysis.executiveSummary?.includes("فشل التحليل");
+        const isError = analysis.executiveSummary?.includes("فشل");
+
+        if (isError && analysis.executiveSummary?.includes("API key")) {
+             alert("⚠️ خطأ: مفتاح API غير صالح أو مفقود. يرجى التحقق من الإعدادات.");
+        }
 
         setFiles(prev => prev.map(f => f.id === pending.id ? {
           ...f, 
@@ -103,39 +105,27 @@ const App: React.FC = () => {
             ...f.isoMetadata!, 
             ...analysis, 
             updatedAt: new Date().toISOString(), 
-            status: isFailure ? ArchiveStatus.IN_PROCESS : ArchiveStatus.ACTIVE, // إبقاء الحالة معلقة إذا فشل
-            description: isFailure ? "فشل التحليل - انقر للتفاصيل" : analysis.description || f.isoMetadata?.description || ""
+            status: isError ? ArchiveStatus.IN_PROCESS : ArchiveStatus.ACTIVE,
+            description: isError ? "تحتاج مراجعة" : (analysis.description || f.isoMetadata?.description || "")
           }
         } : f));
 
-        if (!isFailure) {
+        if (!isError) {
             setAuditLogs(prev => [{ 
-            id: Date.now().toString(), 
-            action: AuditAction.UPDATE, 
-            details: `تم تحليل الوثيقة بنجاح: ${pending.name}`, 
-            user: 'Gemini V2', 
-            timestamp: new Date().toISOString() 
+                id: Date.now().toString(), 
+                action: AuditAction.UPDATE, 
+                details: `تم تحليل: ${pending.name}`, 
+                user: 'Gemini V2', 
+                timestamp: new Date().toISOString() 
             }, ...prev]);
         }
-
       } catch (e) {
-        console.error("Critical Engine Failure:", e);
-        // تحديث الملف ليعكس الفشل بدلاً من البقاء معلقاً
-        setFiles(prev => prev.map(f => f.id === pending.id ? { 
-            ...f, 
-            isProcessing: false,
-            isoMetadata: {
-                ...f.isoMetadata!,
-                executiveSummary: "حدث خطأ غير متوقع أثناء المعالجة. يرجى إعادة المحاولة.",
-                description: "خطأ في النظام"
-            }
-        } : f));
+        console.error("Critical Failure:", e);
+        setFiles(prev => prev.map(f => f.id === pending.id ? { ...f, isProcessing: false } : f));
       } finally { 
         isAnalyzingRef.current = false; 
       }
     };
-    
-    // فاصل زمني 4 ثواني لتخفيف الحمل على الـ API
     const interval = setInterval(runAnalysis, 4000);
     return () => clearInterval(interval);
   }, [files]);
@@ -167,15 +157,9 @@ const App: React.FC = () => {
         if (data.ok && data.result.length > 0) {
           for (const upd of data.result) {
             setIntegrations(p => ({ ...p, telegram: { ...p.telegram, lastUpdateId: upd.update_id } }));
-            
             if (upd.message && String(upd.message.chat.id) === String(adminChatId) && upd.message.text) {
               const query = upd.message.text;
-              await sendToTelegram("⏳ <b>جاري التفكير...</b>");
-              
-              const ctx = filesRef.current.slice(0, 10).map(f => 
-                `ID:${f.isoMetadata?.recordId} | ${f.name}: ${f.isoMetadata?.executiveSummary}`
-              ).join('\n');
-              
+              const ctx = filesRef.current.slice(0, 10).map(f => `FILE: ${f.name} | SUMMARY: ${f.isoMetadata?.executiveSummary}`).join('\n');
               const reply = await askAgent(query, ctx);
               await sendToTelegram(reply);
             }
@@ -183,32 +167,34 @@ const App: React.FC = () => {
         }
       } catch (e) { console.error(e); } finally { isPollingRef.current = false; }
     };
-
     const interval = setInterval(pollUpdates, 5000);
     return () => clearInterval(interval);
   }, [integrations.telegram.connected]);
 
   const handleSelectFolder = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (window.aistudio) {
+      const hasKey = await window.aistudio.hasSelectedApiKey();
+      if (!hasKey) {
+        await window.aistudio.openSelectKey();
+      }
+    }
+
     const sel = e.target.files;
     if (!sel || sel.length === 0) return;
-    
     setIsScanning(true);
     setScanProgress(0);
-    
     const newRecords: FileRecord[] = [];
-    
     for (let i = 0; i < sel.length; i++) {
       const f = sel[i];
-      if (f.name.startsWith('.')) continue; // تجاهل ملفات النظام المخفية
-
+      if (f.name.startsWith('.')) continue;
       newRecords.push({
         id: Math.random().toString(36).substr(2, 9).toUpperCase(),
         name: f.name, size: f.size, type: f.type, lastModified: f.lastModified,
         originalFile: f, isProcessing: true,
         isoMetadata: {
-          recordId: `R-${Date.now().toString().slice(-5)}-${i}`, title: f.name, 
-          description: "في انتظار التحليل...", documentType: DocumentType.OTHER, 
-          entity: "الأرشيف العام", importance: Importance.NORMAL,
+          recordId: `R-${Date.now().toString().slice(-6)}-${i}`, title: f.name, 
+          description: "...", documentType: DocumentType.OTHER, 
+          entity: "General", importance: Importance.NORMAL,
           confidentiality: Confidentiality.INTERNAL, status: ArchiveStatus.IN_PROCESS,
           createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), 
           year: new Date().getFullYear(), originalPath: (f as any).webkitRelativePath || f.name, 
@@ -217,13 +203,21 @@ const App: React.FC = () => {
       });
       setScanProgress(Math.round(((i + 1) / sel.length) * 100));
     }
-    
     setFiles(prev => [...newRecords, ...prev]);
     setIsScanning(false);
   };
 
   const handleChat = async () => {
     if (!mainChatInput.trim() || isAgentLoading) return;
+    
+    if (window.aistudio) {
+      const hasKey = await window.aistudio.hasSelectedApiKey();
+      if (!hasKey) {
+        await window.aistudio.openSelectKey();
+        return; // Stop and let user select key
+      }
+    }
+
     const input = mainChatInput; setChatInput('');
     setMainChatMessages(p => [...p, { id: Date.now().toString(), role: 'user', text: input, timestamp: new Date() }]);
     setIsAgentLoading(true);
@@ -231,21 +225,21 @@ const App: React.FC = () => {
     setMainChatMessages(p => [...p, { id: botId, role: 'assistant', text: '', timestamp: new Date() }]);
     let full = "";
     try {
-      const ctx = files.slice(0, 15).map(f => `${f.name}: ${f.isoMetadata?.executiveSummary}`).join('\n');
+      const ctx = files.slice(0, 10).map(f => `${f.name}: ${f.isoMetadata?.executiveSummary}`).join('\n');
       const stream = askAgentStream(input, ctx);
       for await (const chunk of stream) {
         full += chunk;
         setMainChatMessages(p => p.map(m => m.id === botId ? { ...m, text: full } : m));
       }
     } catch { 
-      setMainChatMessages(p => p.map(m => m.id === botId ? { ...m, text: "عذراً، الوكيل يواجه صعوبة في الاتصال." } : m));
+      setMainChatMessages(p => p.map(m => m.id === botId ? { ...m, text: "خطأ في الاتصال." } : m));
     }
     setIsAgentLoading(false);
   };
 
   const handleVerifyTelegram = async () => {
     const { botToken, adminChatId } = integrations.telegram.config;
-    if (!botToken || !adminChatId) return alert("البيانات ناقصة.");
+    if (!botToken || !adminChatId) return alert("يرجى إدخال البيانات.");
     setIsVerifying(true);
     try {
       const res = await fetch(`https://api.telegram.org/bot${botToken}/getMe`);
@@ -254,16 +248,16 @@ const App: React.FC = () => {
         await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ chat_id: adminChatId, text: "✅ <b>الأرشيف متصل:</b> جاهز لاستقبال الأوامر.", parse_mode: 'HTML' })
+            body: JSON.stringify({ chat_id: adminChatId, text: "✅ <b>تم الاتصال:</b> النظام جاهز.", parse_mode: 'HTML' })
         });
         setIntegrations(p => ({ ...p, telegram: { ...p.telegram, connected: true } }));
         alert(`تم الربط مع: ${data.result.first_name}`);
-      } else alert("فشل التحقق من التوكن.");
+      } else alert("فشل التحقق.");
     } catch { alert("خطأ في الاتصال."); } finally { setIsVerifying(false); }
   };
 
   const handleReset = () => {
-    if (confirm("⚠️ تحذير نهائي: سيتم مسح قاعدة البيانات المحلية بالكامل.")) {
+    if (confirm("سيتم حذف كل البيانات. هل أنت متأكد؟")) {
       setFiles([]); setAuditLogs([]); localStorage.clear(); location.reload();
     }
   };
@@ -276,7 +270,7 @@ const App: React.FC = () => {
             <div className="bg-indigo-600 w-12 h-12 rounded-2xl flex items-center justify-center text-white font-black text-2xl shadow-xl">أ</div>
             <div>
               <span className="text-2xl font-black text-white block tracking-tighter">أرشيف PRO</span>
-              <span className="text-[10px] text-indigo-400 font-bold uppercase tracking-widest">System V11</span>
+              <span className="text-[10px] text-indigo-400 font-bold uppercase tracking-widest">System V12</span>
             </div>
           </div>
           <nav className="space-y-2">
@@ -290,7 +284,7 @@ const App: React.FC = () => {
         <div className="mt-auto p-8 border-t border-slate-800">
            <div className="flex items-center gap-3">
               <div className={`w-3 h-3 rounded-full animate-pulse shadow-[0_0_10px_rgba(16,185,129,0.5)] ${integrations.telegram.connected ? 'bg-emerald-500' : 'bg-orange-500'}`}></div>
-              <span className="text-xs font-bold text-slate-500 uppercase tracking-widest">{integrations.telegram.connected ? 'Cloud Active' : 'Offline'}</span>
+              <span className="text-xs font-bold text-slate-500 uppercase tracking-widest">{integrations.telegram.connected ? 'Online' : 'Offline'}</span>
            </div>
         </div>
       </aside>
@@ -299,7 +293,7 @@ const App: React.FC = () => {
         {activeTab === 'dashboard' && (
           <div className="max-w-6xl mx-auto space-y-8 animate-saas">
             <header className="flex justify-between items-center bg-white p-8 rounded-[2.5rem] border shadow-sm">
-              <div><h1 className="text-4xl font-black text-slate-900">الرئيسية</h1><p className="text-slate-400 font-bold mt-1">نظام الأرشفة الذكي.</p></div>
+              <div><h1 className="text-4xl font-black text-slate-900">الرئيسية</h1><p className="text-slate-400 font-bold mt-1">نظام إدارة الأرشيف.</p></div>
               <div className="flex gap-4">
                  <div className="px-6 py-3 bg-indigo-50 text-indigo-600 rounded-2xl font-bold flex items-center gap-2 border border-indigo-100 shadow-sm"><Zap size={18} className="animate-pulse" /> Gemini Online</div>
               </div>
@@ -308,7 +302,7 @@ const App: React.FC = () => {
               <div className="lg:col-span-2 space-y-8">
                 <div className="grid grid-cols-2 gap-6">
                   <div className="bg-white p-8 rounded-[2rem] border shadow-sm flex items-center justify-between">
-                    <div><p className="text-xs font-black text-slate-400 uppercase mb-2">إجمالي الملفات</p><h3 className="text-4xl font-black text-slate-800">{files.length}</h3></div>
+                    <div><p className="text-xs font-black text-slate-400 uppercase mb-2">الملفات</p><h3 className="text-4xl font-black text-slate-800">{files.length}</h3></div>
                     <div className="bg-indigo-50 p-5 rounded-2xl text-indigo-600"><Database size={28} /></div>
                   </div>
                   <div className="bg-white p-8 rounded-[2rem] border shadow-sm flex items-center justify-between">
@@ -326,14 +320,14 @@ const App: React.FC = () => {
                    </div>
                    <div className="p-4 bg-slate-800 border-t border-white/10">
                       <div className="flex gap-2 bg-slate-900 p-2 rounded-xl border border-white/5 shadow-inner">
-                         <input type="text" className="flex-1 bg-transparent border-none outline-none text-white px-3 py-2 text-sm font-bold" placeholder="كيف يمكنني مساعدتك؟" value={mainChatInput} onChange={e => setChatInput(e.target.value)} onKeyPress={e => e.key === 'Enter' && handleChat()} />
+                         <input type="text" className="flex-1 bg-transparent border-none outline-none text-white px-3 py-2 text-sm font-bold" placeholder="كيف أساعدك؟" value={mainChatInput} onChange={e => setChatInput(e.target.value)} onKeyPress={e => e.key === 'Enter' && handleChat()} />
                          <button onClick={handleChat} className="bg-indigo-600 p-2 rounded-lg text-white hover:bg-indigo-500 transition-all"><Send size={18} /></button>
                       </div>
                    </div>
                 </div>
               </div>
               <div className="bg-white p-8 rounded-[2.5rem] border shadow-sm flex flex-col">
-                <h3 className="text-lg font-black text-slate-800 mb-6 flex items-center gap-2"><History size={20} className="text-indigo-600" /> النشاط الأخير</h3>
+                <h3 className="text-lg font-black text-slate-800 mb-6 flex items-center gap-2"><History size={20} className="text-indigo-600" /> آخر الأنشطة</h3>
                 <div className="space-y-6 flex-1 overflow-y-auto max-h-[500px] pr-2 custom-scroll">
                   {auditLogs.slice(0, 15).map(log => (
                     <div key={log.id} className="border-r-2 border-slate-100 pr-4 py-1">
@@ -342,7 +336,7 @@ const App: React.FC = () => {
                       <p className="text-[10px] text-slate-400 font-bold mt-1">{new Date(log.timestamp).toLocaleTimeString('ar-SA')}</p>
                     </div>
                   ))}
-                  {auditLogs.length === 0 && <p className="text-slate-400 text-xs text-center py-20 font-bold">لا توجد سجلات.</p>}
+                  {auditLogs.length === 0 && <p className="text-slate-400 text-xs text-center py-20 font-bold">لا سجلات.</p>}
                 </div>
               </div>
             </div>
@@ -352,7 +346,7 @@ const App: React.FC = () => {
         {activeTab === 'archive' && (
           <div className="max-w-7xl mx-auto space-y-8 animate-saas">
             <header className="flex justify-between items-center bg-white p-8 rounded-[2.5rem] border shadow-sm">
-              <div><h1 className="text-4xl font-black text-slate-900">الأرشيف المركزي</h1><p className="text-slate-400 font-bold mt-1">رفع وتصنيف المجلدات.</p></div>
+              <div><h1 className="text-4xl font-black text-slate-900">الأرشيف المركزي</h1><p className="text-slate-400 font-bold mt-1">رفع المجلدات والملفات.</p></div>
               <div className="flex gap-4">
                 <div className="relative w-80 shadow-sm rounded-2xl overflow-hidden">
                   <Search className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
@@ -360,7 +354,7 @@ const App: React.FC = () => {
                 </div>
                 <input type="file" ref={folderInputRef} className="hidden" multiple {...({ webkitdirectory: "", directory: "" } as any)} onChange={handleSelectFolder} />
                 <button onClick={() => folderInputRef.current?.click()} className="bg-indigo-600 text-white px-8 py-4 rounded-2xl font-black flex items-center gap-3 hover:bg-indigo-700 shadow-xl transition-all active:scale-95">
-                  <FolderPlus size={24} /> رفع مجلد كامل
+                  <FolderPlus size={24} /> رفع مجلد
                 </button>
               </div>
             </header>
@@ -369,7 +363,7 @@ const App: React.FC = () => {
               <div className="bg-indigo-600 text-white p-12 rounded-[2.5rem] shadow-2xl flex flex-col items-center gap-6 animate-in fade-in zoom-in">
                 <Loader2 className="animate-spin" size={48} />
                 <h3 className="text-2xl font-black">جاري المعالجة... {scanProgress}%</h3>
-                <p className="font-bold opacity-80">يتم استيراد الملفات وبدء التحليل...</p>
+                <p className="font-bold opacity-80">يتم الفحص والتحليل...</p>
               </div>
             )}
 
@@ -377,7 +371,7 @@ const App: React.FC = () => {
               {files.filter(f => f.name.toLowerCase().includes(searchQuery.toLowerCase())).map(file => (
                 <div key={file.id} onClick={() => setSelectedFileId(file.id)} className={`bg-white p-8 rounded-[2.5rem] border hover:shadow-2xl transition-all cursor-pointer relative group overflow-hidden ${file.isoMetadata?.executiveSummary?.includes("فشل") ? "border-rose-200 bg-rose-50" : "border-slate-100"}`}>
                   {file.isProcessing && <div className="absolute top-6 left-6 animate-pulse bg-indigo-50 text-indigo-600 px-3 py-1 rounded-full text-[10px] font-black border border-indigo-100 flex items-center gap-1 shadow-sm z-20"><Loader2 size={10} className="animate-spin" /> تحليل...</div>}
-                  {file.isoMetadata?.executiveSummary?.includes("فشل") && <div className="absolute top-6 left-6 bg-rose-100 text-rose-600 px-3 py-1 rounded-full text-[10px] font-black border border-rose-200 flex items-center gap-1 z-20"><AlertTriangle size={10} /> فشل</div>}
+                  {file.isoMetadata?.executiveSummary?.includes("فشل") && <div className="absolute top-6 left-6 bg-rose-100 text-rose-600 px-3 py-1 rounded-full text-[10px] font-black border border-rose-200 flex items-center gap-1 z-20"><AlertTriangle size={10} /> خطأ</div>}
                   <div className={`w-16 h-16 rounded-2xl flex items-center justify-center mb-6 transition-all shadow-sm ${file.isoMetadata?.executiveSummary?.includes("فشل") ? "bg-rose-100 text-rose-500" : "bg-slate-50 text-slate-400 group-hover:bg-indigo-600 group-hover:text-white"}`}><FileText size={28} /></div>
                   <h3 className="text-xl font-black text-slate-800 truncate mb-1 relative z-10">{file.isoMetadata?.title || file.name}</h3>
                   <p className="text-[10px] text-indigo-500 font-black tracking-widest uppercase mb-4 relative z-10">{file.isoMetadata?.recordId}</p>
@@ -390,8 +384,8 @@ const App: React.FC = () => {
               {files.length === 0 && !isScanning && (
                 <div className="col-span-full py-40 flex flex-col items-center justify-center bg-white rounded-[3rem] border-2 border-dashed border-slate-200 opacity-60">
                    <FolderOpen size={64} className="text-slate-300 mb-6" />
-                   <h3 className="text-2xl font-black text-slate-800">الأرشيف فارغ</h3>
-                   <p className="text-slate-500 font-bold mt-2">قم برفع مجلد للبدء.</p>
+                   <h3 className="text-2xl font-black text-slate-800">لا توجد ملفات</h3>
+                   <p className="text-slate-500 font-bold mt-2">ابدأ برفع مجلد.</p>
                 </div>
               )}
             </div>
@@ -437,11 +431,11 @@ const App: React.FC = () => {
                     <div className="space-y-6 max-w-lg">
                       <div className="space-y-2">
                         <label className="text-xs font-black block text-slate-500 uppercase mr-1">Bot Token</label>
-                        <input type="password" placeholder="Ex: 123456:ABC-DEF..." className="w-full p-4 bg-slate-50 rounded-2xl outline-none font-mono text-xs border border-slate-200 focus:border-indigo-500 focus:bg-white transition-all shadow-sm" value={integrations.telegram.config.botToken} onChange={e => setIntegrations({ ...integrations, telegram: { ...integrations.telegram, config: { ...integrations.telegram.config, botToken: e.target.value } } })} />
+                        <input type="password" placeholder="123456:ABC-DEF..." className="w-full p-4 bg-slate-50 rounded-2xl outline-none font-mono text-xs border border-slate-200 focus:border-indigo-500 focus:bg-white transition-all shadow-sm" value={integrations.telegram.config.botToken} onChange={e => setIntegrations({ ...integrations, telegram: { ...integrations.telegram, config: { ...integrations.telegram.config, botToken: e.target.value } } })} />
                       </div>
                       <div className="space-y-2">
                         <label className="text-xs font-black block text-slate-500 uppercase mr-1">Admin Chat ID</label>
-                        <input type="text" placeholder="Ex: 192837465..." className="w-full p-4 bg-slate-50 rounded-2xl outline-none font-mono text-xs border border-slate-200 focus:border-indigo-500 focus:bg-white transition-all shadow-sm" value={integrations.telegram.config.adminChatId} onChange={e => setIntegrations({ ...integrations, telegram: { ...integrations.telegram, config: { ...integrations.telegram.config, adminChatId: e.target.value } } })} />
+                        <input type="text" placeholder="123456789..." className="w-full p-4 bg-slate-50 rounded-2xl outline-none font-mono text-xs border border-slate-200 focus:border-indigo-500 focus:bg-white transition-all shadow-sm" value={integrations.telegram.config.adminChatId} onChange={e => setIntegrations({ ...integrations, telegram: { ...integrations.telegram, config: { ...integrations.telegram.config, adminChatId: e.target.value } } })} />
                       </div>
                       <button onClick={handleVerifyTelegram} disabled={isVerifying} className="bg-slate-900 text-white w-full p-5 rounded-2xl font-black flex items-center justify-center gap-3 hover:bg-slate-800 transition-all shadow-xl disabled:opacity-50">
                         {isVerifying ? <Loader2 className="animate-spin" /> : <ShieldCheck />} حفظ والتحقق
@@ -470,7 +464,7 @@ const App: React.FC = () => {
               </div>
               <div className="flex-1 overflow-y-auto p-12 space-y-10 custom-scroll">
                  <div className={`p-8 rounded-[2.5rem] border shadow-inner relative overflow-hidden ${files.find(f => f.id === selectedFileId)?.isoMetadata?.executiveSummary?.includes("فشل") ? "bg-rose-50 border-rose-100" : "bg-indigo-50 border-indigo-100"}`}>
-                    <h4 className={`font-black mb-4 flex items-center gap-2 uppercase tracking-tighter text-xs font-bold ${files.find(f => f.id === selectedFileId)?.isoMetadata?.executiveSummary?.includes("فشل") ? "text-rose-600" : "text-indigo-600"}`}><Sparkles size={18} /> {files.find(f => f.id === selectedFileId)?.isoMetadata?.executiveSummary?.includes("فشل") ? "خطأ في التحليل" : "التحليل الذكي"}</h4>
+                    <h4 className={`font-black mb-4 flex items-center gap-2 uppercase tracking-tighter text-xs font-bold ${files.find(f => f.id === selectedFileId)?.isoMetadata?.executiveSummary?.includes("فشل") ? "text-rose-600" : "text-indigo-600"}`}><Sparkles size={18} /> {files.find(f => f.id === selectedFileId)?.isoMetadata?.executiveSummary?.includes("فشل") ? "تقرير الخطأ" : "التحليل الذكي"}</h4>
                     <p className="text-slate-800 leading-9 text-sm font-bold text-justify whitespace-pre-wrap">{files.find(f => f.id === selectedFileId)?.isoMetadata?.executiveSummary}</p>
                  </div>
                  <div className="grid grid-cols-2 gap-6">

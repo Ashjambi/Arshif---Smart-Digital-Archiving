@@ -87,6 +87,7 @@ export interface FileRecord {
   isProcessing: boolean;
   extractedText?: string; // Content extracted via OCR or Mammoth
   originalFile?: File; // مرجع للملف الأصلي في الذاكرة لغرض التحميل والإرسال
+  base64Data?: string; // تخزين الملف كـ Base64 للأرشفة الدائمة (للنماذج الصغيرة)
 }
 
 export interface ChatMessage {
@@ -115,4 +116,13 @@ export interface AuditLog {
   user: string;
   timestamp: string;
   resourceId?: string;
+}
+
+declare global {
+  interface Window {
+    aistudio?: {
+      hasSelectedApiKey: () => Promise<boolean>;
+      openSelectKey: () => Promise<void>;
+    };
+  }
 }
