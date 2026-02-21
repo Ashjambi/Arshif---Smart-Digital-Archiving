@@ -5,7 +5,7 @@ import {
   ArrowRight, Bot, FileImage, 
   FileBox, Activity, MessageSquare, Database, 
   Clock, Download, Trash2,
-  AlertTriangle, Sparkles, Eye,
+  AlertTriangle, Sparkles, Eye, AlertCircle,
   Settings as SettingsIcon, ShieldCheck,
   ChevronLeft, Trash, Save, Info, Bell, Shield,
   Layers, Edit3, PlusCircle,
@@ -60,7 +60,7 @@ const App: React.FC = () => {
 
   const filesRef = useRef(files);
   const integrationsRef = useRef(integrations);
-  const isAnalyzingRef = useRef(false);
+  const activeAnalysisIds = useRef<Set<string>>(new Set());
   const isPollingRef = useRef(false);
   const lastUpdateIdRef = useRef<number>(0);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -145,50 +145,72 @@ const App: React.FC = () => {
 
   useEffect(() => {
     const runAnalysis = async () => {
-      const pending = files.find(f => f.isProcessing);
-      if (!pending || isAnalyzingRef.current) return;
+      // Find up to 3 pending files for parallel processing
+      const pendingFiles = files.filter(f => f.isProcessing).slice(0, 3);
+      if (pendingFiles.length === 0) return;
       
-      isAnalyzingRef.current = true;
-      try {
-        let analysis;
-        if (pending.originalFile) {
-          const b64 = await fileToBase64(pending.originalFile);
-          analysis = await analyzeSpecificFile(pending.name, b64, pending.originalFile.type, true);
-        } else {
-          analysis = await analyzeSpecificFile(pending.name, pending.content || "", undefined, false);
-        }
-        
-        setFiles(prev => prev.map(f => f.id === pending.id ? {
-          ...f, 
-          isProcessing: false,
-          isoMetadata: { 
-            ...f.isoMetadata!, 
-            ...analysis, 
-            updatedAt: new Date().toISOString(), 
-            status: ArchiveStatus.ACTIVE,
-            expiryDate: null
+      // Filter out files that are already being handled by an active promise
+      const filesToAnalyze = pendingFiles.filter(f => !activeAnalysisIds.current.has(f.id));
+      if (filesToAnalyze.length === 0) return;
+
+      filesToAnalyze.forEach(async (pending) => {
+        activeAnalysisIds.current.add(pending.id);
+        try {
+          let analysis;
+          if (pending.originalFile) {
+            const b64 = await fileToBase64(pending.originalFile);
+            analysis = await analyzeSpecificFile(pending.name, b64, pending.originalFile.type, true);
+          } else {
+            analysis = await analyzeSpecificFile(pending.name, pending.content || "", undefined, false);
           }
-        } : f));
+          
+          setFiles(prev => prev.map(f => f.id === pending.id ? {
+            ...f, 
+            isProcessing: false,
+            isoMetadata: { 
+              ...f.isoMetadata!, 
+              ...analysis, 
+              updatedAt: new Date().toISOString(), 
+              status: analysis.status || ArchiveStatus.ACTIVE,
+              expiryDate: null
+            }
+          } : f));
 
-        setAuditLogs(prev => [{ 
-          id: Date.now().toString(), 
-          action: AuditAction.UPDATE, 
-          details: `تم تحليل الوثيقة: ${pending.name}`, 
-          user: 'Gemini Pro AI', 
-          timestamp: new Date().toISOString() 
-        }, ...prev]);
+          setAuditLogs(prev => [{ 
+            id: Date.now().toString(), 
+            action: AuditAction.UPDATE, 
+            details: `تم تحليل الوثيقة: ${pending.name}`, 
+            user: 'Gemini AI', 
+            timestamp: new Date().toISOString() 
+          }, ...prev]);
 
-      } catch (e) {
-        console.error("Analysis Queue Error:", e);
-        setFiles(prev => prev.map(f => f.id === pending.id ? { ...f, isProcessing: false } : f));
-      } finally { 
-        isAnalyzingRef.current = false; 
-      }
+          // Auto-send to Telegram if connected
+          if (integrationsRef.current.telegram.connected && analysis.status !== ArchiveStatus.ERROR) {
+             const summaryText = `📄 <b>تحليل وثيقة جديد:</b>\n\n` +
+               `📌 <b>العنوان:</b> ${analysis.title}\n` +
+               `📝 <b>الملخص:</b> ${analysis.executiveSummary}\n` +
+               `🏢 <b>الجهة:</b> ${analysis.sender || '-'}\n` +
+               `📅 <b>التاريخ:</b> ${analysis.fullDate || '-'}\n\n` +
+               `[[DOWNLOAD:${pending.id}]]`;
+             sendToTelegram(summaryText);
+          }
+
+        } catch (e) {
+          console.error("Analysis Queue Error:", e);
+          setFiles(prev => prev.map(f => f.id === pending.id ? { ...f, isProcessing: false } : f));
+        } finally { 
+          activeAnalysisIds.current.delete(pending.id);
+        }
+      });
     };
     
-    const interval = setInterval(runAnalysis, 2000);
+    const interval = setInterval(runAnalysis, 1000);
     return () => clearInterval(interval);
   }, [files]);
+
+  const handleRetryAnalysis = (id: string) => {
+    setFiles(prev => prev.map(f => f.id === id ? { ...f, isProcessing: true } : f));
+  };
 
   const sendToTelegram = async (text: string) => {
     const { botToken, adminChatId, connected } = integrationsRef.current.telegram;
@@ -289,6 +311,13 @@ const App: React.FC = () => {
     setDiagStep(4);
   };
 
+  // Initialize Instance ID
+  useEffect(() => {
+    if (!localStorage.getItem('instance_id')) {
+        localStorage.setItem('instance_id', `NODE-${Math.random().toString(36).substr(2, 6).toUpperCase()}`);
+    }
+  }, []);
+
   // Initialize Service
   useEffect(() => {
     telegramServiceRef.current = new TelegramService(integrations.telegram.config);
@@ -321,31 +350,56 @@ const App: React.FC = () => {
 
   // Main Polling Effect
   useEffect(() => {
+    if (!telegramServiceRef.current) {
+        telegramServiceRef.current = new TelegramService(integrations.telegram.config);
+    }
     const service = telegramServiceRef.current;
     if (!service) return;
 
     // Define the message handler with access to current 'files' state
     service.setOnMessage(async (query, chatId) => {
       // Authorization Check
-      const { adminChatId } = integrationsRef.current.telegram.config;
-      const allowedUsers = integrationsRef.current.telegram.allowedUsers || [];
+      const telegramData = integrationsRef.current?.telegram;
+      if (!telegramData) return "⚠️ خطأ في تكوين النظام.";
+
+      const adminChatId = telegramData.config?.adminChatId;
+      const allowedUsers = telegramData.allowedUsers || [];
       
       // Allow if it's the admin OR if it's in the allowed list
-      const isAuthorized = String(chatId) === String(adminChatId) || allowedUsers.includes(String(chatId));
+      const isAuthorized = (adminChatId && String(chatId) === String(adminChatId)) || allowedUsers.includes(String(chatId));
       
       if (!isAuthorized) {
-          // Optional: Log unauthorized access attempt
+          console.warn(`Unauthorized access attempt from ${chatId}`);
           return "⛔ عذراً، ليس لديك صلاحية الوصول لهذا البوت. يرجى التواصل مع المسؤول لإضافتك.";
       }
 
       // Use ref to get latest files without re-binding
       const currentFiles = filesRef.current;
       
+      // Command: /status
+      if (query.trim() === '/status' || query.trim() === 'الوضع') {
+          const fileCount = currentFiles.length;
+          const totalSize = (currentFiles.reduce((acc, f) => acc + f.size, 0) / (1024 * 1024)).toFixed(2);
+          const instanceId = localStorage.getItem('instance_id') || 'UNKNOWN';
+          
+          return `📊 <b>حالة النظام:</b>
+✅ <b>الحالة:</b> متصل
+📂 <b>عدد الملفات المؤرشفة:</b> ${fileCount}
+💾 <b>حجم البيانات:</b> ${totalSize} MB
+🆔 <b>معرف النسخة:</b> <code>${instanceId}</code>
+
+⚠️ <b>ملاحظة:</b> إذا كنت تستخدم التطبيق من عدة أجهزة (مثل VPS وجهاز محلي)، فإن كل جهاز يمتلك أرشيفاً منفصلاً. تأكد من أنك تتحدث مع النسخة التي تحتوي على ملفاتك.`;
+      }
+
       const context = currentFiles.slice(0, 10).map(f => 
         `[ID:${f.id}] ${f.name}: ${f.isoMetadata?.executiveSummary?.substring(0, 150)}`
       ).join('\n');
 
       const reply = await askAgent(query, context);
+      
+      // Append Instance Info to footer for debugging
+      const instanceId = localStorage.getItem('instance_id')?.substring(0, 6) || 'UNK';
+      const footer = `\n\n_Ref: ${instanceId} | Files: ${currentFiles.length}_`;
 
       // Handle file downloads if needed
       if (reply.includes('[[DOWNLOAD:')) {
@@ -369,10 +423,11 @@ const App: React.FC = () => {
            // We need to ensure we have the file object
            if (target.originalFile) {
                await service.sendDocument(chatId, target.originalFile, caption);
-               return cleanReply.trim() || "تم العثور على الملف وإرساله. 📂";
+               return (cleanReply.trim() || "تم العثور على الملف وإرساله. 📂") + footer;
            } else if (target.base64Data) {
                // Reconstruct File from Base64 if original is lost (Persistence Layer)
                try {
+                   // ... (reconstruction) ...
                    const byteCharacters = atob(target.base64Data);
                    const byteNumbers = new Array(byteCharacters.length);
                    for (let i = 0; i < byteCharacters.length; i++) {
@@ -383,19 +438,27 @@ const App: React.FC = () => {
                    const file = new File([blob], target.name, { type: target.type });
                    
                    await service.sendDocument(chatId, file, caption + "\n(نسخة محفوظة)");
-                   return cleanReply.trim() || "تم العثور على الملف وإرساله. 📂";
+                   return (cleanReply.trim() || "تم العثور على الملف وإرساله. 📂") + footer;
                } catch (e) {
-                   return "⚠️ عذراً، فشل استرجاع الملف من قاعدة البيانات.";
+                   return "⚠️ عذراً، فشل استرجاع الملف من قاعدة البيانات." + footer;
                }
            } else {
-               return "⚠️ عذراً، الملف المؤرشف لا يحتوي على بيانات ثنائية (Binary Data) متاحة حالياً. (ربما حجمه كبير جداً للحفظ المحلي)";
+               return "⚠️ عذراً، الملف المؤرشف لا يحتوي على بيانات ثنائية (Binary Data) متاحة حالياً. (ربما حجمه كبير جداً للحفظ المحلي)" + footer;
            }
         } else {
-           return "⚠️ عذراً، الملف المطلوب غير موجود في الأرشيف.";
+           return "⚠️ عذراً، الملف المطلوب غير موجود في الأرشيف." + footer;
         }
       }
       
-      return reply;
+      if (reply.includes('[[DOWNLOAD:')) {
+         // ... (existing download logic) ...
+         // We need to pass the footer even if download logic triggers, 
+         // but download logic returns early. 
+         // Let's modify the return statements in the download block to include footer if it's a text response.
+         // Actually, download logic returns specific strings. Let's append to them.
+      }
+      
+      return reply + footer;
     });
 
   // ... inside useEffect for polling ...
@@ -415,8 +478,13 @@ const App: React.FC = () => {
                             const chatId = String(msg.chat.id);
                             const text = msg.text;
                             if (telegramServiceRef.current?.onMessageCallback) {
-                                const reply = await telegramServiceRef.current.onMessageCallback(text, chatId);
-                                if (reply) await telegramServiceRef.current.sendMessage(chatId, reply);
+                                try {
+                                    const reply = await telegramServiceRef.current.onMessageCallback(text, chatId);
+                                    if (reply) await telegramServiceRef.current.sendMessage(chatId, reply);
+                                } catch (err: any) {
+                                    console.error("Relay Callback Error", err);
+                                    await telegramServiceRef.current.sendMessage(chatId, `⚠️ حدث خطأ في معالجة الرسالة: ${err.message}`);
+                                }
                             }
                         }
                     }
@@ -433,18 +501,31 @@ const App: React.FC = () => {
     }, 2000);
 
     return () => clearInterval(pollInterval);
-  }, [isDetectingChatId]); // Re-bind only if detection mode changes (though refs handle most)
+  }, [isDetectingChatId, integrations.telegram.config.botToken]); // Re-bind if token changes or detection mode changes
 
   // ... existing code ...
 
   const handleSyncFiles = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const sel = e.target.files;
     if (!sel || sel.length === 0) return;
+    
+    // Filter for PDF files only
+    const pdfFiles = Array.from(sel).filter(f => f.type === 'application/pdf' || f.name.toLowerCase().endsWith('.pdf'));
+    
+    if (pdfFiles.length === 0) {
+        alert("⚠️ عذراً، النظام يقبل ملفات PDF فقط.");
+        return;
+    }
+
+    if (pdfFiles.length < sel.length) {
+        alert(`⚠️ تم استبعاد ${sel.length - pdfFiles.length} ملفات لأنها ليست PDF.`);
+    }
+
     setIsScanning(true);
     setScanProgress(0);
     const newRecords: FileRecord[] = [];
-    for (let i = 0; i < sel.length; i++) {
-      const f = sel[i];
+    for (let i = 0; i < pdfFiles.length; i++) {
+      const f = pdfFiles[i];
       setCurrentScanningFile(f.name);
       
       // Generate Base64 for persistence
@@ -471,7 +552,7 @@ const App: React.FC = () => {
           expiryDate: null
         }
       });
-      setScanProgress(Math.round(((i + 1) / sel.length) * 100));
+      setScanProgress(Math.round(((i + 1) / pdfFiles.length) * 100));
       await new Promise(r => setTimeout(r, 20));
     }
     setFiles(prev => [...newRecords, ...prev]);
@@ -556,7 +637,7 @@ const App: React.FC = () => {
 
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
               <div className="lg:col-span-2 space-y-8">
-                <div className="grid grid-cols-2 gap-6">
+                <div className="grid grid-cols-3 gap-6">
                   <div className="bg-white p-8 rounded-[2rem] border shadow-sm flex items-center justify-between">
                     <div><p className="text-xs font-black text-slate-400 uppercase mb-2">إجمالي الوثائق</p><h3 className="text-4xl font-black text-slate-800">{files.length}</h3></div>
                     <div className="bg-slate-50 p-5 rounded-2xl text-indigo-600"><Database size={28} /></div>
@@ -564,6 +645,10 @@ const App: React.FC = () => {
                   <div className="bg-white p-8 rounded-[2rem] border shadow-sm flex items-center justify-between">
                     <div><p className="text-xs font-black text-slate-400 uppercase mb-2">تفاعل تليجرام</p><h3 className="text-2xl font-black text-blue-600">{integrations.telegram.stats.messagesSent}</h3></div>
                     <div className="bg-slate-50 p-5 rounded-2xl text-blue-600"><TelegramIcon size={28} /></div>
+                  </div>
+                  <div className="bg-white p-8 rounded-[2rem] border shadow-sm flex items-center justify-between">
+                    <div><p className="text-xs font-black text-slate-400 uppercase mb-2">تحليلات فاشلة</p><h3 className="text-2xl font-black text-rose-600">{files.filter(f => f.isoMetadata?.status === ArchiveStatus.ERROR).length}</h3></div>
+                    <div className="bg-slate-50 p-5 rounded-2xl text-rose-600"><AlertCircle size={28} /></div>
                   </div>
                 </div>
 
@@ -638,9 +723,10 @@ const App: React.FC = () => {
 
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
               {files.filter(f => f.name.toLowerCase().includes(searchQuery.toLowerCase())).map(file => (
-                <div key={file.id} onClick={() => setSelectedFileId(file.id)} className="bg-white p-8 rounded-[2.5rem] border shadow-sm hover:shadow-2xl transition-all cursor-pointer relative group">
+                <div key={file.id} onClick={() => setSelectedFileId(file.id)} className={`bg-white p-8 rounded-[2.5rem] border shadow-sm hover:shadow-2xl transition-all cursor-pointer relative group ${file.isoMetadata?.status === ArchiveStatus.ERROR ? 'border-rose-200' : ''}`}>
                   {file.isProcessing && <div className="absolute top-6 left-6 animate-pulse bg-indigo-50 text-indigo-600 px-3 py-1 rounded-full text-[10px] font-black border border-indigo-100 flex items-center gap-1 shadow-sm"><Loader2 size={10} className="animate-spin" /> تحليل Pro...</div>}
-                  <div className="bg-slate-50 w-16 h-16 rounded-2xl flex items-center justify-center mb-6 group-hover:bg-indigo-600 group-hover:text-white transition-all shadow-sm"><FileText size={28} /></div>
+                  {file.isoMetadata?.status === ArchiveStatus.ERROR && <div className="absolute top-6 left-6 bg-rose-50 text-rose-600 px-3 py-1 rounded-full text-[10px] font-black border border-rose-100 flex items-center gap-1 shadow-sm"><AlertCircle size={10} /> خطأ في التحليل</div>}
+                  <div className={`bg-slate-50 w-16 h-16 rounded-2xl flex items-center justify-center mb-6 group-hover:bg-indigo-600 group-hover:text-white transition-all shadow-sm ${file.isoMetadata?.status === ArchiveStatus.ERROR ? 'text-rose-500' : ''}`}><FileText size={28} /></div>
                   <h3 className="text-xl font-black text-slate-800 truncate mb-1 relative z-10">{file.isoMetadata?.title || file.name}</h3>
                   <p className="text-[10px] text-indigo-500 font-black tracking-widest uppercase mb-4 relative z-10">{file.isoMetadata?.recordId}</p>
                 </div>
@@ -878,8 +964,22 @@ const App: React.FC = () => {
               <div className="flex-1 overflow-y-auto p-12 space-y-10 custom-scroll">
                  <div className="bg-indigo-50 p-8 rounded-[2.5rem] border border-indigo-100 shadow-inner relative overflow-hidden">
                     <div className="absolute top-0 left-0 w-2 h-full bg-indigo-500/20"></div>
-                    <h4 className="font-black text-indigo-600 mb-4 flex items-center gap-2 uppercase tracking-tighter text-xs font-bold"><Sparkles size={18} /> الملخص التنفيذي الذكي (Pro AI Analysis)</h4>
-                    <p className="text-slate-800 leading-9 text-sm font-bold text-justify">{files.find(f => f.id === selectedFileId)?.isoMetadata?.executiveSummary || "جاري التحليل..."}</p>
+                    <div className="flex justify-between items-start mb-4">
+                        <h4 className={`font-black mb-0 flex items-center gap-2 uppercase tracking-tighter text-xs font-bold ${files.find(f => f.id === selectedFileId)?.isoMetadata?.status === ArchiveStatus.ERROR ? 'text-rose-600' : 'text-indigo-600'}`}>
+                           <Sparkles size={18} /> الملخص التنفيذي الذكي (Pro AI Analysis)
+                        </h4>
+                        {files.find(f => f.id === selectedFileId)?.isoMetadata?.status === ArchiveStatus.ERROR && (
+                           <button 
+                             onClick={() => handleRetryAnalysis(selectedFileId!)}
+                             className="bg-rose-600 text-white px-4 py-2 rounded-xl text-[10px] font-black hover:bg-rose-700 transition-all flex items-center gap-2 shadow-lg"
+                           >
+                             <RefreshCw size={12} /> إعادة المحاولة
+                           </button>
+                        )}
+                     </div>
+                     <p className="text-slate-800 leading-9 text-sm font-bold text-justify">
+                        {files.find(f => f.id === selectedFileId)?.isProcessing ? "جاري التحليل..." : (files.find(f => f.id === selectedFileId)?.isoMetadata?.executiveSummary || "لا يوجد ملخص متاح.")}
+                     </p>
                  </div>
                  <div className="grid grid-cols-2 gap-6">
                     {[

@@ -160,29 +160,26 @@ export class TelegramService {
             
             this.log(`Received msg from ID: "${chatId}" | Text: "${text.substring(0, 10)}..."`);
 
-            // Normalize IDs for comparison
-            const normalizedChatId = chatId.trim();
-            const normalizedAdminId = (this.config.adminChatId || '').trim();
-
-            // Check if authorized
-            if (normalizedAdminId && normalizedChatId === normalizedAdminId) {
-              this.log("✅ ID Match! Processing message...");
-              if (this.onMessageCallback) {
-                // Send typing indicator
-                await this.sendChatAction(chatId, 'typing');
-                
-                // Process message
+            // Pass all messages to the callback and let it handle authorization
+            this.log(`Processing message from ID: "${chatId}"`);
+            if (this.onMessageCallback) {
+              // Send typing indicator
+              await this.sendChatAction(chatId, 'typing');
+              
+              // Process message
+              try {
                 const reply = await this.onMessageCallback(text, chatId);
                 
                 // Send response
                 if (reply) {
                     await this.sendMessage(chatId, reply);
                 }
-              } else {
-                this.log("❌ No message callback registered!");
+              } catch (callbackError: any) {
+                this.log(`❌ Callback Error: ${callbackError.message}`);
+                await this.sendMessage(chatId, `⚠️ حدث خطأ أثناء معالجة طلبك: ${callbackError.message || 'خطأ داخلي'}`);
               }
             } else {
-              this.log(`⛔ Unauthorized/Mismatch. Received: "${normalizedChatId}", Expected: "${normalizedAdminId}"`);
+              this.log("❌ No message callback registered!");
             }
           }
         }

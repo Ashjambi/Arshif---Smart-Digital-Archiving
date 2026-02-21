@@ -70,116 +70,137 @@ export const analyzeSpecificFile = async (
   mimeType?: string,
   isBinary: boolean = false
 ): Promise<Partial<ISOMetadata>> => {
-  try {
-    // Note: API key selection should be handled by the caller (UI) to avoid loops
-    const apiKey = getApiKey();
-    if (!apiKey) {
-      throw new Error("API_KEY غير موجود. يرجى تحديد مفتاح API.");
-    }
-
-    const ai = new GoogleGenAI({ apiKey });
-    // Use Pro model for better reasoning and accuracy
-    const model = "gemini-3.1-pro-preview";
-    
-    const promptText = `
-    أنت خبير أرشفة رقمية محترف. قم بتحليل الملف المرفق "${fileName}" بدقة عالية جداً واستخرج البيانات التالية بتنسيق JSON حصراً.
-    
-    التعليمات:
-    1. استخرج العنوان الرسمي للوثيقة بدقة.
-    2. اكتب ملخصاً تنفيذياً شاملاً وواضحاً يغطي جميع النقاط الرئيسية في الوثيقة.
-    3. حدد نوع الوثيقة بدقة (عقد، فاتورة، خطاب، تقرير، إلخ).
-    4. استخرج اسم الجهة المرسلة واسم الجهة المستلمة.
-    5. استخرج تاريخ الوثيقة الكامل.
-    6. حدد درجة الأهمية (عادي، مهم، سري، سري للغاية) بناءً على محتوى الوثيقة وسياقها.
-    7. استخرج رقم القيد أو الرقم الإشاري إن وجد.
-    
-    تنسيق JSON المطلوب:
-    {
-      "title": "العنوان الدقيق",
-      "executiveSummary": "الملخص التفصيلي",
-      "documentType": "نوع الوثيقة",
-      "sender": "المرسل",
-      "recipient": "المستلم",
-      "fullDate": "التاريخ (YYYY-MM-DD)",
-      "importance": "عادي/مهم/سري",
-      "incomingNumber": "رقم القيد"
-    }
-    `;
-
-    const parts: any[] = isBinary && mimeType 
-      ? [{ inlineData: { mimeType, data: contentOrBase64 } }, { text: promptText }]
-      : [{ text: promptText }, { text: `المحتوى النصي للوثيقة:\n${contentOrBase64.substring(0, 100000)}` }];
-
-    const generate = async () => {
-      return await ai.models.generateContent({
-        model: model,
-        contents: [{ parts }],
-        config: { 
-          responseMimeType: "application/json",
-          responseSchema: {
-            type: Type.OBJECT,
-            properties: {
-              title: { type: Type.STRING },
-              executiveSummary: { type: Type.STRING },
-              documentType: { type: Type.STRING },
-              sender: { type: Type.STRING },
-              recipient: { type: Type.STRING },
-              incomingNumber: { type: Type.STRING },
-              fullDate: { type: Type.STRING },
-              importance: { type: Type.STRING }
-            },
-            required: ["title", "executiveSummary"]
-          },
-          safetySettings: [
-            { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.BLOCK_NONE },
-            { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold: HarmBlockThreshold.BLOCK_NONE },
-            { category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold: HarmBlockThreshold.BLOCK_NONE },
-            { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.BLOCK_NONE },
-          ]
-        }
-      });
-    };
-
-    const response = await retryOperation(generate);
-    
-    // Check for safety blocks
-    if (!response.candidates || response.candidates.length === 0) {
-      return {
-        title: fileName,
-        executiveSummary: "فشل التحليل: تم حظر المحتوى لأسباب أمنية (Safety Block).",
-        status: ArchiveStatus.IN_PROCESS
-      };
-    }
-
-    const result = parseGeminiJSON(response.text);
-    if (!result) {
-      return {
-        title: fileName,
-        executiveSummary: "فشل التحليل: استجابة غير صالحة من المصدر (Invalid JSON).",
-        status: ArchiveStatus.IN_PROCESS
-      };
-    }
-    
-    return result;
-
-  } catch (error: any) {
-    console.error("Gemini Service Error:", error);
-    return {
-      title: fileName,
-      executiveSummary: `فشل التحليل: ${error.message || "خطأ غير معروف في الاتصال"}.`,
-      status: ArchiveStatus.IN_PROCESS
-    };
+  const apiKey = getApiKey();
+  if (!apiKey) {
+    throw new Error("API_KEY غير موجود. يرجى تحديد مفتاح API.");
   }
+
+  const ai = new GoogleGenAI({ apiKey });
+  
+  // Use Flash as primary for speed, Pro as fallback for depth if needed
+  const models = ["gemini-3-flash-preview", "gemini-3.1-pro-preview"];
+  
+  const promptText = `
+  أنت خبير أرشفة رقمية ومحلل وثائق استراتيجي. قم بإجراء تحليل معمق للملف المرفق "${fileName}" لإنتاج ملخص تنفيذي رفيع المستوى.
+  
+  المهام المطلوبة:
+  1. **العنوان الرسمي**: استخلص المسمى الوثائقي الدقيق (مثلاً: تعميم إداري، قرار وزاري، محضر اجتماع).
+  2. **الملخص التنفيذي**: اكتب ملخصاً احترافياً بأسلوب "نقاط القوة والقرار". يجب أن يتضمن:
+     - الغرض الأساسي من الوثيقة.
+     - القرارات أو التوجيهات الرئيسية.
+     - الجهات المعنية والإجراءات المطلوبة.
+     - أي تواريخ نهائية أو التزامات قانونية.
+  3. **التصنيف**: حدد نوع الوثيقة (خطاب رسمي، تعميم، تقرير فني، إلخ).
+  4. **الأطراف**: حدد الجهة المصدرة (المرسل) والجهة الموجه إليها (المستلم).
+  5. **البيانات المرجعية**: استخرج التاريخ ورقم القيد بدقة.
+  6. **التقييم**: حدد درجة الأهمية (عادي، مهم، سري) بناءً على حساسية المحتوى.
+  
+  يجب أن تكون الإجابة بتنسيق JSON حصراً:
+  {
+    "title": "العنوان الرسمي",
+    "executiveSummary": "الملخص التنفيذي الاحترافي",
+    "documentType": "نوع الوثيقة",
+    "sender": "الجهة المصدرة",
+    "recipient": "الجهة المستلمة",
+    "fullDate": "YYYY-MM-DD",
+    "importance": "عادي/مهم/سري",
+    "incomingNumber": "رقم القيد/الإشارة"
+  }
+  `;
+
+  const parts: any[] = isBinary && mimeType 
+    ? [{ inlineData: { mimeType, data: contentOrBase64 } }, { text: promptText }]
+    : [{ text: promptText }, { text: `المحتوى النصي للوثيقة:\n${contentOrBase64.substring(0, 100000)}` }];
+
+  for (const modelName of models) {
+    try {
+      const generate = async () => {
+        return await ai.models.generateContent({
+          model: modelName,
+          contents: [{ parts }],
+          config: { 
+            responseMimeType: "application/json",
+            responseSchema: {
+              type: Type.OBJECT,
+              properties: {
+                title: { type: Type.STRING },
+                executiveSummary: { type: Type.STRING },
+                documentType: { type: Type.STRING },
+                sender: { type: Type.STRING },
+                recipient: { type: Type.STRING },
+                incomingNumber: { type: Type.STRING },
+                fullDate: { type: Type.STRING },
+                importance: { type: Type.STRING }
+              },
+              required: ["title", "executiveSummary"]
+            },
+            safetySettings: [
+              { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.BLOCK_NONE },
+              { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold: HarmBlockThreshold.BLOCK_NONE },
+              { category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold: HarmBlockThreshold.BLOCK_NONE },
+              { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.BLOCK_NONE },
+            ]
+          }
+        });
+      };
+
+      const response = await retryOperation(generate);
+      
+      if (!response.candidates || response.candidates.length === 0) {
+        continue; // Try next model if possible
+      }
+
+      if (!response.text) {
+        continue;
+      }
+
+      const result = parseGeminiJSON(response.text);
+      if (result) {
+        return { ...result, status: ArchiveStatus.COMPLETED };
+      }
+    } catch (error: any) {
+      const errorMsg = error.message || "";
+      console.warn(`Model ${modelName} failed:`, errorMsg);
+      
+      // If it's a quota error and we have more models, continue
+      if ((errorMsg.includes("429") || errorMsg.includes("quota")) && modelName !== models[models.length - 1]) {
+        console.log("Quota exceeded for Pro, falling back to Flash...");
+        continue;
+      }
+      
+      // If it's the last model or not a quota error, handle it
+      if (modelName === models[models.length - 1]) {
+          let userFriendlyError = "⚠️ فشل التحليل الذكي.";
+          if (errorMsg.includes("429") || errorMsg.includes("quota")) {
+              userFriendlyError = "⚠️ انتهت حصة الاستخدام (Quota) لمفتاح API الخاص بك. يرجى التحقق من خطة الدفع أو المحاولة لاحقاً.";
+          } else if (errorMsg.includes("Safety")) {
+              userFriendlyError = "⚠️ تم حظر المحتوى لأسباب أمنية.";
+          }
+          
+          return {
+            title: fileName,
+            executiveSummary: userFriendlyError,
+            status: ArchiveStatus.ERROR
+          };
+      }
+    }
+  }
+
+  return {
+    title: fileName,
+    executiveSummary: "⚠️ فشل التحليل: لم يتمكن النظام من معالجة الملف باستخدام النماذج المتاحة.",
+    status: ArchiveStatus.ERROR
+  };
 };
 
 export const askAgent = async (query: string, archiveContext: string): Promise<string> => {
   const apiKey = getApiKey();
-  if (!apiKey) return "خطأ: مفتاح API غير موجود.";
+  if (!apiKey) return "خطأ: مفتاح API غير موجود في النظام.";
   
   const ai = new GoogleGenAI({ apiKey });
   try {
     const response = await ai.models.generateContent({
-      model: "gemini-3.1-pro-preview",
+      model: "gemini-3-flash-preview",
       contents: [{ parts: [{ text: `أنت مساعد ذكي لأرشفة الملفات. استخدم السياق التالي للإجابة على سؤال المستخدم بدقة واحترافية.
       
       هام جداً:
@@ -191,26 +212,36 @@ export const askAgent = async (query: string, archiveContext: string): Promise<s
       
       سؤال المستخدم: ${query}` }] }]
     });
-    return response.text || "لا توجد إجابة.";
-  } catch (e) {
-    return "عذراً، حدث خطأ في النظام.";
+    
+    if (!response || !response.text) {
+        return "⚠️ لم يتمكن المحرك من توليد إجابة حالياً.";
+    }
+    
+    return response.text;
+  } catch (e: any) {
+    console.error("Agent Error Details:", e);
+    // Return detailed error to help user debug
+    return `⚠️ حدث خطأ في محرك الذكاء الاصطناعي:
+السبب: ${e.message || "خطأ غير معروف"}
+الموديل: gemini-3-flash-preview`;
   }
 };
 
 export async function* askAgentStream(query: string, archiveContext: string) {
   const apiKey = getApiKey();
-  if (!apiKey) { yield "API Key Missing"; return; }
+  if (!apiKey) { yield "⚠️ مفتاح API غير موجود."; return; }
   
   const ai = new GoogleGenAI({ apiKey });
   try {
     const stream = await ai.models.generateContentStream({
-      model: "gemini-3.1-pro-preview",
-      contents: [{ parts: [{ text: `You are an intelligent archiving assistant. Use the following context to answer the user's question accurately and professionally in Arabic.\n\nContext:\n${archiveContext}\n\nUser Question: ${query}` }] }]
+      model: "gemini-3-flash-preview",
+      contents: [{ parts: [{ text: `أنت مساعد ذكي لأرشفة الملفات. استخدم السياق التالي للإجابة على سؤال المستخدم بدقة واحترافية باللغة العربية.\n\nالسياق:\n${archiveContext}\n\nسؤال المستخدم: ${query}` }] }]
     });
     for await (const chunk of stream) {
-      yield chunk.text;
+      if (chunk.text) yield chunk.text;
     }
-  } catch (e) {
-    yield "Error connecting to agent.";
+  } catch (e: any) {
+    console.error("Stream Agent Error:", e);
+    yield `⚠️ خطأ في الاتصال بالمحرك: ${e.message || "خطأ غير معروف"}`;
   }
 }
