@@ -30,7 +30,9 @@ export enum ArchiveStatus {
   CLOSED = 'مغلق',
   ARCHIVED = 'مؤرشف',
   DESTRUCTION_CANDIDATE = 'مرشح للحذف',
-  DESTROYED = 'تم الإتلاف'
+  DESTROYED = 'تم الإتلاف',
+  ERROR = 'خطأ في التحليل',
+  COMPLETED = 'مكتمل'
 }
 
 export enum RetentionAction {
@@ -56,12 +58,15 @@ export interface ISOMetadata {
   executiveSummary?: string; // ملخص تنفيذي شامل (الجديد)
   documentType: DocumentType;
   entity: string;
-  sender?: string;         // المرسل
-  recipient?: string;      // إلى
+  sender?: string;         // الجهة المرسلة
+  recipient?: string;      // الجهة المستلمة
+  signatory?: string;      // الشخص الموقع أو صاحب الصلاحية (الجديد)
   cc?: string;             // نسخة إلى
   category?: string;       // التصنيف
   incomingNumber?: string; // رقم الوارد
   outgoingNumber?: string; // رقم الصادر
+  externalInboundNumber?: string; // رقم الوارد الخارجي (من الختم المربع)
+  attachments?: string;    // المشفوعات (من الأختام)
   year: number;
   fullDate?: string;       // التاريخ الكامل الموجود في الخطاب
   importance: Importance;
@@ -72,6 +77,7 @@ export interface ISOMetadata {
   createdAt: string;
   updatedAt: string;
   relatedFileIds?: string[]; // IDs of files identified as related
+  relatedReferences?: string[]; // Extracted reference numbers or mentions of other documents
   ocrStatus?: 'pending' | 'completed' | 'failed' | 'skipped'; // New field for OCR status
 }
 
@@ -85,6 +91,7 @@ export interface FileRecord {
   preview?: string; // Base64 thumbnail or truncated text content
   isoMetadata?: ISOMetadata;
   isProcessing: boolean;
+  retryCount?: number; // عدد محاولات إعادة التحليل التلقائي
   extractedText?: string; // Content extracted via OCR or Mammoth
   originalFile?: File; // مرجع للملف الأصلي في الذاكرة لغرض التحميل والإرسال
   base64Data?: string; // تخزين الملف كـ Base64 للأرشفة الدائمة (للنماذج الصغيرة)

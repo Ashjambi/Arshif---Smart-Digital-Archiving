@@ -27,9 +27,28 @@ export class TelegramService {
   private isPolling: boolean = false;
   private onMessageCallback: ((text: string, chatId: string) => Promise<string>) | null = null;
   private onLogCallback: ((log: string) => void) | null = null;
+  private chatHistory: Map<string, {role: string, text: string}[]> = new Map();
 
   constructor(config: TelegramConfig) {
     this.config = config;
+  }
+
+  getChatHistory(chatId: string) {
+    return this.chatHistory.get(chatId) || [];
+  }
+
+  addChatMessage(chatId: string, role: string, text: string) {
+    const history = this.getChatHistory(chatId);
+    history.push({ role, text });
+    // Keep only last 10 messages to avoid context overflow
+    if (history.length > 10) {
+      history.shift();
+    }
+    this.chatHistory.set(chatId, history);
+  }
+  
+  clearChatHistory(chatId: string) {
+    this.chatHistory.delete(chatId);
   }
 
   updateConfig(config: TelegramConfig) {
@@ -53,16 +72,93 @@ export class TelegramService {
     console.log(`[Telegram] ${message}`);
   }
 
+  private escapeHtml(text: string): string {
+    return text
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
+  }
+
   async sendMessage(chatId: string, text: string) {
-    if (!this.config.botToken) return;
+    if (!this.config.botToken) return null;
     try {
-      await fetch(`https://api.telegram.org/bot${this.config.botToken}/sendMessage`, {
+      // We escape HTML to prevent "Bad Request: can't parse entities" errors
+      // but we might want to preserve some basic tags if we trust the source.
+      // For now, let's escape everything to be safe, or selectively allow.
+      // Actually, many parts of the app use <b> and <code>, so we should be careful.
+      
+      // If the text already looks like it has intentional HTML, we might not want to escape it.
+      // But the error "Unsupported start tag html" suggests the AI is sending raw HTML.
+      
+      // Let's implement a smarter sanitizer that escapes everything EXCEPT allowed tags.
+      const allowedTags = ['b', 'i', 'u', 's', 'a', 'code', 'pre'];
+      let sanitized = text
+        .replace(/&/g, '&amp;')
+        .replace(/<(?!(\/?(b|i|u|s|a|code|pre)\b))[^>]*>/gi, (match) => {
+           // Escape any tag that isn't in the whitelist
+           return match.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        });
+      
+      // Also escape standalone < and > that aren't part of tags
+      // This is complex with regex. A simpler approach:
+      // If we use parse_mode: 'HTML', we MUST ensure all < and > are part of valid tags.
+      
+      // Let's try a simpler approach: if it fails with HTML, retry without parse_mode or with escaped text.
+      
+      const truncatedText = sanitized.length > 4000 ? sanitized.substring(0, 3900) + "...\n\n(تم اختصار الرسالة لطولها)" : sanitized;
+      
+      const res = await fetch(`https://api.telegram.org/bot${this.config.botToken}/sendMessage`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ chat_id: chatId, text, parse_mode: 'HTML' })
+        body: JSON.stringify({ chat_id: chatId, text: truncatedText, parse_mode: 'HTML' })
       });
+      const data = await res.json();
+      if (!res.ok) {
+        this.log(`Error sending message: ${data.description}. Retrying without HTML...`);
+        // Fallback: send as plain text if HTML parsing fails
+        const plainRes = await fetch(`https://api.telegram.org/bot${this.config.botToken}/sendMessage`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ chat_id: chatId, text: text.substring(0, 4000) })
+        });
+        return null;
+      }
+      return data.result?.message_id;
     } catch (e) {
       this.log(`Error sending message: ${e}`);
+      return null;
+    }
+  }
+
+  async editMessageText(chatId: string, messageId: number, text: string) {
+    if (!this.config.botToken) return;
+    try {
+      const allowedTags = ['b', 'i', 'u', 's', 'a', 'code', 'pre'];
+      let sanitized = text
+        .replace(/&/g, '&amp;')
+        .replace(/<(?!(\/?(b|i|u|s|a|code|pre)\b))[^>]*>/gi, (match) => {
+           return match.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        });
+
+      const truncatedText = sanitized.length > 4000 ? sanitized.substring(0, 3900) + "...\n\n(تم اختصار الرسالة لطولها)" : sanitized;
+      
+      const res = await fetch(`https://api.telegram.org/bot${this.config.botToken}/editMessageText`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ chat_id: chatId, message_id: messageId, text: truncatedText, parse_mode: 'HTML' })
+      });
+      if (!res.ok) {
+        const errData = await res.json();
+        this.log(`Error editing message: ${errData.description}. Retrying without HTML...`);
+        // Fallback
+        await fetch(`https://api.telegram.org/bot${this.config.botToken}/editMessageText`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ chat_id: chatId, message_id: messageId, text: text.substring(0, 4000) })
+        });
+      }
+    } catch (e) {
+      this.log(`Error editing message: ${e}`);
     }
   }
 
@@ -79,14 +175,35 @@ export class TelegramService {
 
   async sendDocument(chatId: string, file: File, caption: string) {
     if (!this.config.botToken) return false;
+    
+    const allowedTags = ['b', 'i', 'u', 's', 'a', 'code', 'pre'];
+    let sanitizedCaption = caption
+      .replace(/&/g, '&amp;')
+      .replace(/<(?!(\/?(b|i|u|s|a|code|pre)\b))[^>]*>/gi, (match) => {
+         return match.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      });
+
     const fd = new FormData();
     fd.append('chat_id', chatId);
     fd.append('document', file);
-    fd.append('caption', caption);
+    fd.append('caption', sanitizedCaption);
     fd.append('parse_mode', 'HTML');
     try {
       const res = await fetch(`https://api.telegram.org/bot${this.config.botToken}/sendDocument`, { method: 'POST', body: fd });
       const data = await res.json();
+      
+      if (!res.ok) {
+        this.log(`Error sending document: ${data.description}. Retrying without HTML...`);
+        // Fallback
+        const fdFallback = new FormData();
+        fdFallback.append('chat_id', chatId);
+        fdFallback.append('document', file);
+        fdFallback.append('caption', caption.substring(0, 1024));
+        const resFallback = await fetch(`https://api.telegram.org/bot${this.config.botToken}/sendDocument`, { method: 'POST', body: fdFallback });
+        const dataFallback = await resFallback.json();
+        return dataFallback.ok;
+      }
+      
       return data.ok;
     } catch { return false; }
   }

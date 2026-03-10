@@ -13,7 +13,7 @@ import {
   ChevronRight, Lock, Key, ExternalLink,
   MessageCircle, CheckCircle, Verified, Server, Code2, Globe2,
   Send as TelegramIcon, UserSquare2,
-  HardDrive, FolderPlus, RefreshCw, FolderOpen,
+  HardDrive, FolderPlus, RefreshCw, FolderOpen, FolderSync,
   User, FileCheck, Archive, Scale, Smartphone, Hash, FileInput,
   Link2, LogOut, RotateCcw
 } from 'lucide-react';
@@ -22,9 +22,9 @@ import {
   FileRecord, ArchiveStatus, AuditAction, AuditLog, ChatMessage, DocumentType, Importance, Confidentiality, ISOMetadata
 } from '../types';
 import { NAV_ITEMS, STATUS_COLORS } from '../constants';
-import { askAgent, askAgentStream, analyzeSpecificFile } from '../services/geminiService';
+import { askAgent, askAgentStream, analyzeSpecificFile, APP_VERSION } from '../services/geminiService';
 import { TelegramService } from '../services/telegramService';
-import { saveFileToDB, getFileFromDB, getAllFilesFromDB, clearDB } from './services/storageService';
+import { saveFileToDB, getFileFromDB, getAllFilesFromDB, clearDB, saveDirectoryHandle, getDirectoryHandle } from './services/storageService';
 
 const STORAGE_KEY = 'ARSHIF_PLATFORM_V7_FILES';
 const AUDIT_KEY = 'ARSHIF_PLATFORM_V7_AUDIT';
@@ -36,6 +36,9 @@ const App: React.FC = () => {
   const [files, setFiles] = useState<FileRecord[]>([]);
   const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
+  const [directoryHandle, setDirectoryHandle] = useState<any>(null);
+  const [isAutoSyncEnabled, setIsAutoSyncEnabled] = useState(false);
+  const [lastSyncTime, setLastSyncTime] = useState<number>(0);
   const [selectedFileId, setSelectedFileId] = useState<string | null>(null);
   const [mainChatMessages, setMainChatMessages] = useState<ChatMessage[]>([]);
   const [mainChatInput, setChatInput] = useState('');
@@ -66,7 +69,18 @@ const App: React.FC = () => {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => { filesRef.current = files; }, [files]);
-  useEffect(() => { integrationsRef.current = integrations; }, [integrations]);
+  useEffect(() => { 
+    integrationsRef.current = integrations; 
+    if (telegramServiceRef.current) {
+        telegramServiceRef.current.updateConfig(integrations.telegram.config);
+    }
+  }, [integrations]);
+
+  useEffect(() => {
+    if (!localStorage.getItem('instance_id')) {
+        localStorage.setItem('instance_id', `NODE-${Math.random().toString(36).substr(2, 6).toUpperCase()}`);
+    }
+  }, []);
 
   useEffect(() => {
     const loadData = async () => {
@@ -145,8 +159,8 @@ const App: React.FC = () => {
 
   useEffect(() => {
     const runAnalysis = async () => {
-      // Find up to 3 pending files for parallel processing
-      const pendingFiles = files.filter(f => f.isProcessing).slice(0, 3);
+      // Increase parallel processing to 5 for faster batch analysis
+      const pendingFiles = files.filter(f => f.isProcessing).slice(0, 5);
       if (pendingFiles.length === 0) return;
       
       // Filter out files that are already being handled by an active promise
@@ -186,18 +200,31 @@ const App: React.FC = () => {
 
           // Auto-send to Telegram if connected
           if (integrationsRef.current.telegram.connected && analysis.status !== ArchiveStatus.ERROR) {
+             const extInbound = analysis.externalInboundNumber ? `📥 <b>وارد خارجي:</b> ${analysis.externalInboundNumber}\n` : '';
+             const attachments = analysis.attachments ? `📎 <b>المشفوعات:</b> ${analysis.attachments}\n` : '';
+             const signatory = analysis.signatory ? `✍️ <b>الموقع:</b> ${analysis.signatory}\n` : '';
+             
              const summaryText = `📄 <b>تحليل وثيقة جديد:</b>\n\n` +
                `📌 <b>العنوان:</b> ${analysis.title}\n` +
                `📝 <b>الملخص:</b> ${analysis.executiveSummary}\n` +
                `🏢 <b>الجهة:</b> ${analysis.sender || '-'}\n` +
-               `📅 <b>التاريخ:</b> ${analysis.fullDate || '-'}\n\n` +
-               `[[DOWNLOAD:${pending.id}]]`;
+               `📅 <b>التاريخ:</b> ${analysis.fullDate || '-'}\n` +
+               extInbound + attachments + signatory +
+               `\n[[DOWNLOAD:${pending.id}]]`;
              sendToTelegram(summaryText);
           }
 
-        } catch (e) {
+        } catch (e: any) {
           console.error("Analysis Queue Error:", e);
-          setFiles(prev => prev.map(f => f.id === pending.id ? { ...f, isProcessing: false } : f));
+          setFiles(prev => prev.map(f => f.id === pending.id ? { 
+            ...f, 
+            isProcessing: false,
+            isoMetadata: {
+              ...f.isoMetadata!,
+              status: ArchiveStatus.ERROR,
+              executiveSummary: `⚠️ خطأ تقني: ${e.message || 'تعذر الاتصال بالخادم'}`
+            }
+          } : f));
         } finally { 
           activeAnalysisIds.current.delete(pending.id);
         }
@@ -209,7 +236,7 @@ const App: React.FC = () => {
   }, [files]);
 
   const handleRetryAnalysis = (id: string) => {
-    setFiles(prev => prev.map(f => f.id === id ? { ...f, isProcessing: true } : f));
+    setFiles(prev => prev.map(f => f.id === id ? { ...f, isProcessing: true, retryCount: 0 } : f));
   };
 
   const sendToTelegram = async (text: string) => {
@@ -348,6 +375,74 @@ const App: React.FC = () => {
   // Hybrid Mode State - Default to FALSE for robustness
   const [useWebhookRelay, setUseWebhookRelay] = useState(false);
 
+  // --- Background Auto-Repair Logic ---
+  useEffect(() => {
+    const repairInterval = setInterval(async () => {
+      if (isScanning || files.length === 0) return;
+
+      // Find files that need re-analysis (failed or missing summary)
+      const failedFiles = files.filter(f => {
+        const summary = f.isoMetadata?.executiveSummary || '';
+        const hasError = f.isoMetadata?.status === ArchiveStatus.ERROR || 
+                         summary.includes('{"error"') || 
+                         summary.includes('503') || 
+                         summary.includes('429') ||
+                         summary.includes('تعذر تحليل') ||
+                         summary === 'No summary';
+        
+        const retries = f.retryCount || 0;
+        return !f.isoMetadata || (hasError && !f.isProcessing && retries < 3);
+      });
+
+      if (failedFiles.length > 0) {
+        const target = failedFiles[0]; // Process one at a time
+        
+        // Mark as processing and increment retry count
+        setFiles(prev => prev.map(f => f.id === target.id ? { 
+          ...f, 
+          isProcessing: true, 
+          retryCount: (f.retryCount || 0) + 1 
+        } : f));
+        
+        try {
+          // We need the file object.
+          if (!target.originalFile && !target.base64Data) {
+            setFiles(prev => prev.map(f => f.id === target.id ? { ...f, isProcessing: false } : f));
+            return;
+          }
+
+          let b64 = "";
+          if (target.originalFile) {
+            b64 = await fileToBase64(target.originalFile);
+          } else {
+            b64 = target.base64Data!;
+          }
+
+          const result = await analyzeSpecificFile(target.name, b64, target.type, true);
+          if (result && result.status !== ArchiveStatus.ERROR) {
+            setFiles(prev => prev.map(f => f.id === target.id ? { 
+              ...f, 
+              isProcessing: false,
+              isoMetadata: { ...f.isoMetadata, ...result, status: ArchiveStatus.ACTIVE } 
+            } : f));
+          } else {
+            // If it failed again, just mark as not processing
+            setFiles(prev => prev.map(f => f.id === target.id ? { ...f, isProcessing: false } : f));
+          }
+        } catch (e: any) {
+          setFiles(prev => prev.map(f => f.id === target.id ? { ...f, isProcessing: false } : f));
+          const errorMsg = e?.message || "";
+          if (errorMsg.includes("API key expired") || errorMsg.includes("API_KEY_INVALID")) {
+            console.error("[Auto-Repair] API Key Invalid. Stopping repair cycle.");
+            return; // Stop this interval execution
+          }
+        }
+      }
+    }, 30000); // Check every 30 seconds to be gentle on API
+
+    return () => clearInterval(repairInterval);
+  }, [files, isScanning]);
+
   // Main Polling Effect
   useEffect(() => {
     if (!telegramServiceRef.current) {
@@ -370,13 +465,25 @@ const App: React.FC = () => {
       
       if (!isAuthorized) {
           console.warn(`Unauthorized access attempt from ${chatId}`);
+          service.log(`🚫 Unauthorized access attempt from ID: ${chatId}`);
           return "⛔ عذراً، ليس لديك صلاحية الوصول لهذا البوت. يرجى التواصل مع المسؤول لإضافتك.";
       }
+
+      service.log(`🤖 Processing query: "${query.substring(0, 20)}..."`);
 
       // Use ref to get latest files without re-binding
       const currentFiles = filesRef.current;
       
       // Command: /status
+      if (query.trim() === '/repair' || query.trim() === 'إصلاح') {
+          const failedCount = currentFiles.filter(f => {
+              const summary = f.isoMetadata?.executiveSummary || '';
+              return !f.isoMetadata || summary.includes('503') || summary.includes('429') || summary.includes('تعذر تحليل');
+          }).length;
+          if (failedCount === 0) return "✅ جميع الملفات في الأرشيف تم تحليلها بنجاح. لا توجد ملفات تحتاج لإصلاح.";
+          return `⚙️ تم اكتشاف (${failedCount}) ملفات تحتاج لإعادة تحليل.\n\nالنظام يقوم الآن بإعادة معالجتها تلقائياً في الخلفية (ملف كل 45 ثانية).`;
+      }
+
       if (query.trim() === '/status' || query.trim() === 'الوضع') {
           const fileCount = currentFiles.length;
           const totalSize = (currentFiles.reduce((acc, f) => acc + f.size, 0) / (1024 * 1024)).toFixed(2);
@@ -384,6 +491,7 @@ const App: React.FC = () => {
           
           return `📊 <b>حالة النظام:</b>
 ✅ <b>الحالة:</b> متصل
+🏷️ <b>الإصدار:</b> ${APP_VERSION}
 📂 <b>عدد الملفات المؤرشفة:</b> ${fileCount}
 💾 <b>حجم البيانات:</b> ${totalSize} MB
 🆔 <b>معرف النسخة:</b> <code>${instanceId}</code>
@@ -391,21 +499,89 @@ const App: React.FC = () => {
 ⚠️ <b>ملاحظة:</b> إذا كنت تستخدم التطبيق من عدة أجهزة (مثل VPS وجهاز محلي)، فإن كل جهاز يمتلك أرشيفاً منفصلاً. تأكد من أنك تتحدث مع النسخة التي تحتوي على ملفاتك.`;
       }
 
-      const context = currentFiles.slice(0, 10).map(f => 
-        `[ID:${f.id}] ${f.name}: ${f.isoMetadata?.executiveSummary?.substring(0, 150)}`
-      ).join('\n');
+      if (query.trim() === '/clear' || query.trim() === 'مسح الذاكرة') {
+          service.clearChatHistory(chatId);
+          return "🧹 تم مسح ذاكرة المحادثة بنجاح. المساعد الآن لا يتذكر السياق السابق.";
+      }
 
-      const reply = await askAgent(query, context);
+      // Gemini Flash has a large context window, but we limit to 300 to prevent 502 Gateway errors.
+      const fileList = currentFiles.slice(0, 300).map((f, index) => {
+        let summary = f.isoMetadata?.executiveSummary || 'No summary';
+        if (summary.includes('{"error"') || summary.includes('503') || summary.includes('429')) {
+            summary = "⚠️ (تعذر تحليل محتوى هذا الملف مؤقتاً - يتطلب إعادة معالجة)";
+        }
+        const related = f.isoMetadata?.relatedReferences?.length 
+            ? `\n   🔗 مراجع مرتبطة: ${f.isoMetadata.relatedReferences.join(', ')}` 
+            : '';
+        const signatory = f.isoMetadata?.signatory ? `\n   ✍️ الموقع: ${f.isoMetadata.signatory}` : '';
+        const stamps = (f.isoMetadata?.externalInboundNumber || f.isoMetadata?.attachments) 
+            ? `\n   📥 وارد خارجي: ${f.isoMetadata.externalInboundNumber || '-'} | 📎 مشفوعات: ${f.isoMetadata.attachments || '-'}` 
+            : '';
+        const incomingNum = f.isoMetadata?.incomingNumber ? `\n   🔢 رقم القيد/الإشارة: ${f.isoMetadata.incomingNumber}` : '';
+        const archivingDate = f.isoMetadata?.createdAt ? `\n   📅 تاريخ الأرشفة: ${new Date(f.isoMetadata.createdAt).toLocaleDateString('ar-SA')}` : '';
+            
+        return `${index + 1}. [ID:${f.id}] ${f.name} (${f.isoMetadata?.fullDate || 'N/A'}): ${summary.substring(0, 400)}${incomingNum}${archivingDate}${signatory}${stamps}${related}`;
+      }).join('\n---\n');
+
+      const context = `
+      --- إحصائيات النظام ---
+      CURRENT_DATE: ${new Date().toLocaleDateString('ar-SA')}
+      CURRENT_TIME: ${new Date().toLocaleTimeString('ar-SA')}
+      TOTAL_FILES_COUNT: ${currentFiles.length}
+      TOTAL_DATA_SIZE: ${(currentFiles.reduce((acc, f) => acc + f.size, 0) / (1024 * 1024)).toFixed(2)} MB
+      LAST_UPDATE: ${new Date().toLocaleString('ar-SA')}
+      -----------------------
+      
+      قائمة الملفات (أحدث 500 ملف):
+      ${fileList}
+      `;
+
+      // Send thinking message
+      const thinkingMsgId = await service.sendMessage(chatId, "⏳ جاري البحث والتحليل...");
+
+      let reply = "";
+      try {
+        const chatHistory = service.getChatHistory(chatId);
+        const agentReply = await askAgent(query, context, chatHistory, currentFiles);
+        reply = agentReply || "⚠️ لم يتم استلام رد من المحرك.";
+        
+        // Save to chat history if successful
+        if (agentReply) {
+            service.addChatMessage(chatId, 'user', query);
+            service.addChatMessage(chatId, 'assistant', agentReply);
+        }
+      } catch (error: any) {
+        console.error("Gemini Error:", error);
+        const errorMsg = error?.message || String(error);
+        if (errorMsg.includes("API key expired") || errorMsg.includes("API_KEY_INVALID")) {
+          reply = "⚠️ عذراً، انتهت صلاحية مفتاح التشغيل (API Key). يرجى تحديث الصفحة أو التأكد من إعدادات المفتاح في واجهة AI Studio لاستعادة الخدمة.";
+        } else if (errorMsg.includes("502") || errorMsg.includes("Bad Gateway") || errorMsg.includes("<html>")) {
+          reply = "⚠️ الخادم مزدحم حالياً (502 Bad Gateway) أو حجم البيانات المرسلة كبير جداً. يرجى المحاولة مرة أخرى بعد قليل.";
+        } else {
+          let cleanMsg = errorMsg.replace(/<[^>]*>?/gm, '').trim();
+          if (cleanMsg.length > 150) cleanMsg = cleanMsg.substring(0, 150) + "...";
+          reply = `⚠️ حدث خطأ في محرك الذكاء الاصطناعي:
+السبب: ${cleanMsg}
+الموديل: gemini-3-flash-preview`;
+        }
+      }
+      
+      // Ensure reply is a string
+      if (typeof reply !== 'string') {
+          reply = String(reply);
+      }
       
       // Append Instance Info to footer for debugging
       const instanceId = localStorage.getItem('instance_id')?.substring(0, 6) || 'UNK';
       const footer = `\n\n_Ref: ${instanceId} | Files: ${currentFiles.length}_`;
 
       // Handle file downloads if needed
-      if (reply.includes('[[DOWNLOAD:')) {
-        const rawId = reply.match(/\[\[DOWNLOAD:(.*?)\]\]/)?.[1];
+      const downloadMatches = reply.match(/\[\[DOWNLOAD:(.*?)\]\]/g);
+      const cleanReply = reply.replace(/\[\[DOWNLOAD:.*?\]\]/g, ''); // Remove ALL tags globally
+
+      if (downloadMatches && downloadMatches.length === 1) {
+        const rawId = downloadMatches[0].match(/\[\[DOWNLOAD:(.*?)\]\]/)?.[1];
         const id = rawId ? rawId.trim() : null;
-        const cleanReply = reply.replace(/\[\[DOWNLOAD:.*?\]\]/, '');
         
         // Search by ID or Record ID
         const target = currentFiles.find(f => f.id === id || f.isoMetadata?.recordId === id);
@@ -413,22 +589,30 @@ const App: React.FC = () => {
         if (target) {
            await service.sendChatAction(chatId, 'upload_document');
            
-           // Prepare Enhanced Caption
-           const summary = target.isoMetadata?.executiveSummary 
-               ? `\n\n📝 <b>الملخص التنفيذي:</b>\n${target.isoMetadata.executiveSummary.substring(0, 800)}${target.isoMetadata.executiveSummary.length > 800 ? '...' : ''}` 
-               : '';
-           const caption = `📂 <b>المستند:</b> ${target.name}\n✅ تم الاسترجاع من الأرشيف.${summary}`;
+           // Use the AI's clean reply as the caption for the document
+           // Telegram captions have a limit, so we'll trim if necessary
+           const finalCaption = `📂 <b>المستند:</b> ${target.name}\n\n${cleanReply.trim()}`.substring(0, 1024);
 
-           // Use the service method directly if possible, or fallback to the App helper
-           // We need to ensure we have the file object
-           if (target.originalFile) {
-               await service.sendDocument(chatId, target.originalFile, caption);
-               return (cleanReply.trim() || "تم العثور على الملف وإرساله. 📂") + footer;
-           } else if (target.base64Data) {
-               // Reconstruct File from Base64 if original is lost (Persistence Layer)
+           let dataToUse = target.base64Data;
+           
+           // If data is missing in memory, try to fetch from IndexedDB
+           if (!target.originalFile && !dataToUse) {
                try {
-                   // ... (reconstruction) ...
-                   const byteCharacters = atob(target.base64Data);
+                   const dbRecord = await getFileFromDB(target.id);
+                   if (dbRecord && dbRecord.base64Data) {
+                       dataToUse = dbRecord.base64Data;
+                   }
+               } catch (dbErr) {
+                   console.error("Failed to fetch from IndexedDB", dbErr);
+               }
+           }
+
+           let sentDoc = false;
+           if (target.originalFile) {
+               sentDoc = await service.sendDocument(chatId, target.originalFile, finalCaption);
+           } else if (dataToUse) {
+               try {
+                   const byteCharacters = atob(dataToUse);
                    const byteNumbers = new Array(byteCharacters.length);
                    for (let i = 0; i < byteCharacters.length; i++) {
                        byteNumbers[i] = byteCharacters.charCodeAt(i);
@@ -437,35 +621,45 @@ const App: React.FC = () => {
                    const blob = new Blob([byteArray], { type: target.type });
                    const file = new File([blob], target.name, { type: target.type });
                    
-                   await service.sendDocument(chatId, file, caption + "\n(نسخة محفوظة)");
-                   return (cleanReply.trim() || "تم العثور على الملف وإرساله. 📂") + footer;
+                   sentDoc = await service.sendDocument(chatId, file, finalCaption + "\n(نسخة محفوظة)");
                } catch (e) {
-                   return "⚠️ عذراً، فشل استرجاع الملف من قاعدة البيانات." + footer;
+                   reply = "⚠️ عذراً، فشل استرجاع الملف من قاعدة البيانات.";
                }
            } else {
-               return "⚠️ عذراً، الملف المؤرشف لا يحتوي على بيانات ثنائية (Binary Data) متاحة حالياً. (ربما حجمه كبير جداً للحفظ المحلي)" + footer;
+               const sizeMB = (target.size / (1024 * 1024)).toFixed(1);
+               if (target.size > 50 * 1024 * 1024) {
+                   reply = `⚠️ عذراً، حجم الملف كبير جداً (${sizeMB} MB). الحد الأقصى للإرسال عبر البوت هو 50 MB لضمان استقرار النظام.`;
+               } else {
+                   reply = "⚠️ عذراً، الملف المؤرشف لا يحتوي على بيانات ثنائية متاحة حالياً. يرجى محاولة إعادة رفع الملف.";
+               }
+           }
+           
+           if (sentDoc) {
+               if (thinkingMsgId) {
+                   await service.editMessageText(chatId, thinkingMsgId, "✅ تم إرسال الملف بنجاح." + footer);
+               }
+               return null; // Don't send anything else
            }
         } else {
-           return "⚠️ عذراً، الملف المطلوب غير موجود في الأرشيف." + footer;
+           reply = "⚠️ عذراً، الملف المطلوب غير موجود في الأرشيف.";
         }
       }
       
-      if (reply.includes('[[DOWNLOAD:')) {
-         // ... (existing download logic) ...
-         // We need to pass the footer even if download logic triggers, 
-         // but download logic returns early. 
-         // Let's modify the return statements in the download block to include footer if it's a text response.
-         // Actually, download logic returns specific strings. Let's append to them.
+      const finalReply = cleanReply + footer;
+      if (thinkingMsgId) {
+          await service.editMessageText(chatId, thinkingMsgId, finalReply);
+          return null;
       }
       
-      return reply + footer;
+      return finalReply;
     });
 
   // ... inside useEffect for polling ...
     const pollInterval = setInterval(async () => {
-      const { connected, config } = integrationsRef.current.telegram;
+      const { config } = integrationsRef.current.telegram;
       
-      if ((connected || isDetectingChatId) && config.botToken) {
+      // Poll if we have a token, even if not "connected" (helps with initial setup)
+      if (config.botToken) {
         if (useWebhookRelay) {
             // ... relay logic ...
             try {
@@ -505,22 +699,55 @@ const App: React.FC = () => {
 
   // ... existing code ...
 
-  const handleSyncFiles = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const sel = e.target.files;
-    if (!sel || sel.length === 0) return;
-    
-    // Filter for PDF files only
-    const pdfFiles = Array.from(sel).filter(f => f.type === 'application/pdf' || f.name.toLowerCase().endsWith('.pdf'));
-    
-    if (pdfFiles.length === 0) {
-        alert("⚠️ عذراً، النظام يقبل ملفات PDF فقط.");
-        return;
-    }
+  // --- Automatic Folder Sync Logic ---
+  useEffect(() => {
+    let syncInterval: any;
+    if (isAutoSyncEnabled && directoryHandle) {
+      syncInterval = setInterval(async () => {
+        try {
+          const filesInDir: File[] = [];
+          
+          async function scan(handle: any) {
+            try {
+              for await (const entry of handle.values()) {
+                if (entry.kind === 'file') {
+                  const file = await entry.getFile();
+                  if (file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf')) {
+                    filesInDir.push(file);
+                  }
+                } else if (entry.kind === 'directory') {
+                  await scan(entry);
+                }
+              }
+            } catch (err) {
+              console.warn("Could not scan sub-directory during auto-sync", err);
+            }
+          }
+          
+          await scan(directoryHandle);
+          
+          // Find new files that aren't in our archive yet
+          // We check by name and size as a simple heuristic
+          const newFiles = filesInDir.filter(f => {
+            return !files.some(existing => existing.name === f.name && existing.size === f.size);
+          });
 
-    if (pdfFiles.length < sel.length) {
-        alert(`⚠️ تم استبعاد ${sel.length - pdfFiles.length} ملفات لأنها ليست PDF.`);
+          if (newFiles.length > 0) {
+            console.log(`[Auto-Sync] Found ${newFiles.length} new files.`);
+            // Process them using handleSyncFiles logic (we'll refactor it to a helper)
+            await processNewFiles(newFiles);
+          }
+          setLastSyncTime(Date.now());
+        } catch (e) {
+          console.error("Auto-Sync Error:", e);
+          setIsAutoSyncEnabled(false); // Disable on error (e.g. permission revoked)
+        }
+      }, 60000); // Check every minute
     }
+    return () => clearInterval(syncInterval);
+  }, [isAutoSyncEnabled, directoryHandle, files]);
 
+  const processNewFiles = async (pdfFiles: File[]) => {
     setIsScanning(true);
     setScanProgress(0);
     const newRecords: FileRecord[] = [];
@@ -528,11 +755,9 @@ const App: React.FC = () => {
       const f = pdfFiles[i];
       setCurrentScanningFile(f.name);
       
-      // Generate Base64 for persistence
       let base64Data = "";
       try {
-          // Limit to 5MB to prevent localStorage quota exceeded
-          if (f.size < 5 * 1024 * 1024) {
+          if (f.size < 50 * 1024 * 1024) {
              base64Data = await fileToBase64(f);
           }
       } catch (e) { console.error("Base64 Gen Error", e); }
@@ -541,11 +766,11 @@ const App: React.FC = () => {
         id: Math.random().toString(36).substr(2, 10).toUpperCase(),
         name: f.name, size: f.size, type: f.type, lastModified: f.lastModified,
         originalFile: f, isProcessing: true,
-        base64Data: base64Data, // Store persistence data
+        base64Data: base64Data,
         isoMetadata: {
           recordId: `ARC-${Date.now().toString().slice(-4)}-${i}`, title: f.name, 
-          description: "تحليل جاري...", documentType: DocumentType.OTHER, 
-          entity: "مزامنة سحابية", importance: Importance.NORMAL,
+          description: "مزامنة تلقائية...", documentType: DocumentType.OTHER, 
+          entity: "مزامنة ذكية", importance: Importance.NORMAL,
           confidentiality: Confidentiality.INTERNAL, status: ArchiveStatus.IN_PROCESS,
           createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), 
           year: new Date().getFullYear(), originalPath: f.name, retentionPolicy: "ISO 15489",
@@ -553,10 +778,103 @@ const App: React.FC = () => {
         }
       });
       setScanProgress(Math.round(((i + 1) / pdfFiles.length) * 100));
-      await new Promise(r => setTimeout(r, 20));
     }
     setFiles(prev => [...newRecords, ...prev]);
     setIsScanning(false);
+  };
+
+  useEffect(() => {
+    const loadSyncHandle = async () => {
+      try {
+        const handle = await getDirectoryHandle();
+        if (handle) {
+          setDirectoryHandle(handle);
+          // We don't auto-enable it because it requires user gesture to request permission
+          // But we have the handle ready for when they click the button
+        }
+      } catch (e) {
+        console.error("Failed to load sync handle", e);
+      }
+    };
+    loadSyncHandle();
+  }, []);
+
+  const handleSmartSync = async () => {
+    try {
+      if (!('showDirectoryPicker' in window)) {
+        alert("⚠️ متصفحك لا يدعم خاصية المزامنة الذكية. يرجى استخدام متصفح Chrome أو Edge.");
+        return;
+      }
+
+      if (isAutoSyncEnabled) {
+        setIsAutoSyncEnabled(false);
+        alert("🛑 تم إيقاف المزامنة التلقائية.");
+        return;
+      }
+      
+      let handle = directoryHandle;
+      
+      // If we already have a handle, check permission
+      if (handle) {
+        const permission = await handle.queryPermission({ mode: 'read' });
+        if (permission !== 'granted') {
+          // Request permission (requires user gesture, which we have here)
+          const newPerm = await handle.requestPermission({ mode: 'read' });
+          if (newPerm !== 'granted') {
+            handle = null; // User denied, let them pick a new folder
+          }
+        }
+      }
+      
+      // If no handle or user denied permission for the old one, ask for a new one
+      if (!handle) {
+        handle = await (window as any).showDirectoryPicker();
+        await saveDirectoryHandle(handle);
+      }
+      
+      setDirectoryHandle(handle);
+      setIsAutoSyncEnabled(true);
+      
+      // Initial scan
+      const filesInDir: File[] = [];
+      async function scan(h: any) {
+        try {
+          for await (const entry of h.values()) {
+            if (entry.kind === 'file') {
+              const file = await entry.getFile();
+              if (file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf')) {
+                filesInDir.push(file);
+              }
+            } else if (entry.kind === 'directory') {
+              await scan(entry);
+            }
+          }
+        } catch (err) {
+          console.warn("Could not scan sub-directory", err);
+        }
+      }
+      await scan(handle);
+      const newFiles = filesInDir.filter(f => !files.some(existing => existing.name === f.name && existing.size === f.size));
+      if (newFiles.length > 0) await processNewFiles(newFiles);
+      
+      alert("✅ تم تفعيل المزامنة التلقائية. سيقوم النظام بمراقبة المجلد وإضافة أي ملفات جديدة تلقائياً.");
+    } catch (e) {
+      console.error("Smart Sync Error", e);
+      if ((e as Error).name !== 'AbortError') {
+        alert("⚠️ حدث خطأ أثناء تفعيل المزامنة. يرجى المحاولة مرة أخرى.");
+      }
+    }
+  };
+
+  const handleSyncFiles = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const sel = e.target.files;
+    if (!sel || sel.length === 0) return;
+    const pdfFiles = (Array.from(sel) as File[]).filter(f => f.type === 'application/pdf' || f.name.toLowerCase().endsWith('.pdf'));
+    if (pdfFiles.length === 0) {
+        alert("⚠️ عذراً، النظام يقبل ملفات PDF فقط.");
+        return;
+    }
+    await processNewFiles(pdfFiles);
   };
 
   const handleChat = async () => {
@@ -568,8 +886,36 @@ const App: React.FC = () => {
     setMainChatMessages(p => [...p, { id: botId, role: 'assistant', text: '', timestamp: new Date() }]);
     let full = "";
     try {
-      const ctx = files.slice(0, 10).map(f => `${f.name}: ${f.isoMetadata?.executiveSummary}`).join('\n');
-      const stream = askAgentStream(input, ctx);
+      const fileList = files.slice(0, 500).map((f, index) => {
+        const meta = f.isoMetadata;
+        return `${index + 1}. [ID:${f.id}] ${f.name}
+        - العنوان: ${meta?.title || 'غير متوفر'}
+        - الملخص: ${meta?.executiveSummary?.substring(0, 400) || 'غير متوفر'}
+        - الجهة: ${meta?.sender || 'غير متوفر'}
+        - التاريخ: ${meta?.fullDate || 'غير متوفر'}
+        - رقم القيد/الإشارة: ${meta?.incomingNumber || 'لا يوجد'}
+        - المراجع المرتبطة: ${meta?.relatedReferences?.join(', ') || 'لا يوجد'}
+        - رقم الوارد: ${meta?.externalInboundNumber || 'لا يوجد'}
+        - المشفوعات: ${meta?.attachments || 'لا يوجد'}
+        - الموقع: ${meta?.signatory || 'غير متوفر'}`;
+      }).join('\n---\n');
+
+      const ctx = `
+      --- إحصائيات النظام ---
+      CURRENT_DATE: ${new Date().toLocaleDateString('ar-SA')}
+      CURRENT_TIME: ${new Date().toLocaleTimeString('ar-SA')}
+      TOTAL_FILES_COUNT: ${files.length}
+      TOTAL_DATA_SIZE: ${(files.reduce((acc, f) => acc + f.size, 0) / (1024 * 1024)).toFixed(2)} MB
+      LAST_UPDATE: ${new Date().toLocaleString('ar-SA')}
+      -----------------------
+      
+      قائمة الملفات (أحدث 500 ملف):
+      ${fileList}
+      `;
+      
+      const chatHistory = mainChatMessages.slice(-10).map(m => ({ role: m.role, text: m.text }));
+      
+      const stream = askAgentStream(input, ctx, chatHistory, files);
       for await (const chunk of stream) {
         full += chunk;
         setMainChatMessages(p => p.map(m => m.id === botId ? { ...m, text: full } : m));
@@ -610,13 +956,19 @@ const App: React.FC = () => {
               <span className="text-[10px] text-indigo-400 font-bold uppercase tracking-widest">ISO 15489 AI</span>
             </div>
           </div>
-          <nav className="space-y-2">
+          <nav className="space-y-2 flex-1">
             {NAV_ITEMS.map(item => (
               <button key={item.id} onClick={() => setActiveTab(item.id)} className={`w-full flex items-center gap-4 px-5 py-4 rounded-2xl transition-all ${activeTab === item.id ? 'bg-indigo-600 text-white shadow-xl' : 'text-slate-400 hover:bg-slate-800'}`}>
                 <item.icon size={20} /> <span className="text-sm font-bold">{item.label}</span>
               </button>
             ))}
           </nav>
+        </div>
+        <div className="mt-auto p-8 border-t border-slate-800">
+          <div className="flex items-center justify-between text-xs text-slate-500 font-bold">
+            <span>الإصدار {APP_VERSION}</span>
+            <span className="flex items-center gap-1"><Zap size={12} className="text-indigo-400" /> الذكاء الاصطناعي نشط</span>
+          </div>
         </div>
       </aside>
 
@@ -697,7 +1049,7 @@ const App: React.FC = () => {
               <div className="flex gap-4">
                 <div className="relative w-80">
                   <Search className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
-                  <input className="w-full pr-12 pl-4 py-4 bg-slate-50 border-2 border-transparent focus:border-indigo-500 rounded-2xl outline-none font-bold text-sm" placeholder="بحث..." value={searchQuery} onChange={e => setSearchQuery(e.target.value)} />
+                  <input className="w-full pr-12 pl-4 py-4 bg-slate-50 border-2 border-transparent focus:border-indigo-500 rounded-2xl outline-none font-bold text-sm" placeholder="بحث بالاسم، المعرف، أو المحتوى..." value={searchQuery} onChange={e => setSearchQuery(e.target.value)} />
                 </div>
                 <input 
                   type="file" 
@@ -707,9 +1059,21 @@ const App: React.FC = () => {
                   {...({ webkitdirectory: "", directory: "" } as any)} 
                   onChange={handleSyncFiles} 
                 />
-                <button onClick={() => fileInputRef.current?.click()} className="bg-indigo-600 text-white px-8 py-4 rounded-2xl font-black flex items-center gap-3 hover:bg-indigo-700 shadow-xl transition-all">
-                  <Link2 size={24} /> تحديد مجلد متزامن
-                </button>
+                <div className="flex flex-col gap-1 items-end">
+                  <div className="flex gap-2">
+                    <button onClick={handleSmartSync} className={`flex items-center gap-2 px-6 py-4 rounded-2xl font-black text-sm transition-all shadow-sm border ${isAutoSyncEnabled ? 'bg-emerald-50 text-emerald-600 border-emerald-100' : 'bg-white text-slate-600 border-slate-100 hover:bg-slate-50'}`}>
+                      <RefreshCw size={18} className={isAutoSyncEnabled ? 'animate-spin' : ''} />
+                      {isAutoSyncEnabled ? 'مزامنة تلقائية نشطة' : 'تفعيل المزامنة الذكية'}
+                    </button>
+                    <button onClick={() => fileInputRef.current?.click()} className="flex items-center gap-2 px-6 py-4 bg-indigo-600 text-white rounded-2xl font-black text-sm hover:bg-indigo-700 transition-all shadow-lg shadow-indigo-100">
+                      <FolderSync size={18} />
+                      مزامنة يدوية
+                    </button>
+                  </div>
+                  {lastSyncTime > 0 && (
+                    <span className="text-[10px] font-bold text-slate-400 mr-2">آخر تحديث تلقائي: {new Date(lastSyncTime).toLocaleTimeString('ar-SA')}</span>
+                  )}
+                </div>
               </div>
             </header>
 
@@ -722,13 +1086,33 @@ const App: React.FC = () => {
             )}
 
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
-              {files.filter(f => f.name.toLowerCase().includes(searchQuery.toLowerCase())).map(file => (
-                <div key={file.id} onClick={() => setSelectedFileId(file.id)} className={`bg-white p-8 rounded-[2.5rem] border shadow-sm hover:shadow-2xl transition-all cursor-pointer relative group ${file.isoMetadata?.status === ArchiveStatus.ERROR ? 'border-rose-200' : ''}`}>
+              {files.filter(f => 
+                f.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+                f.id.toLowerCase().includes(searchQuery.toLowerCase()) ||
+                f.isoMetadata?.recordId?.toLowerCase().includes(searchQuery.toLowerCase()) ||
+                f.isoMetadata?.title?.toLowerCase().includes(searchQuery.toLowerCase()) ||
+                f.isoMetadata?.executiveSummary?.toLowerCase().includes(searchQuery.toLowerCase()) ||
+                f.isoMetadata?.sender?.toLowerCase().includes(searchQuery.toLowerCase()) ||
+                f.isoMetadata?.recipient?.toLowerCase().includes(searchQuery.toLowerCase())
+              ).map(file => (
+                <div key={file.id} onClick={() => setSelectedFileId(file.id)} className={`bg-white p-8 rounded-[2.5rem] border shadow-sm hover:shadow-2xl transition-all cursor-pointer relative group ${file.isoMetadata?.status === ArchiveStatus.ERROR ? 'border-rose-300 bg-rose-50/40 shadow-rose-100' : ''}`}>
                   {file.isProcessing && <div className="absolute top-6 left-6 animate-pulse bg-indigo-50 text-indigo-600 px-3 py-1 rounded-full text-[10px] font-black border border-indigo-100 flex items-center gap-1 shadow-sm"><Loader2 size={10} className="animate-spin" /> تحليل Pro...</div>}
-                  {file.isoMetadata?.status === ArchiveStatus.ERROR && <div className="absolute top-6 left-6 bg-rose-50 text-rose-600 px-3 py-1 rounded-full text-[10px] font-black border border-rose-100 flex items-center gap-1 shadow-sm"><AlertCircle size={10} /> خطأ في التحليل</div>}
-                  <div className={`bg-slate-50 w-16 h-16 rounded-2xl flex items-center justify-center mb-6 group-hover:bg-indigo-600 group-hover:text-white transition-all shadow-sm ${file.isoMetadata?.status === ArchiveStatus.ERROR ? 'text-rose-500' : ''}`}><FileText size={28} /></div>
+                  {file.isoMetadata?.status === ArchiveStatus.ERROR && <div className="absolute top-6 left-6 bg-rose-100 text-rose-700 px-3 py-1 rounded-full text-[10px] font-black border border-rose-200 flex items-center gap-1 shadow-sm animate-bounce"><AlertCircle size={10} /> فشل التحليل</div>}
+                  <div className={`w-16 h-16 rounded-2xl flex items-center justify-center mb-6 group-hover:bg-indigo-600 group-hover:text-white transition-all shadow-sm ${file.isoMetadata?.status === ArchiveStatus.ERROR ? 'bg-rose-100 text-rose-600' : 'bg-slate-50 text-slate-600'}`}><FileText size={28} /></div>
                   <h3 className="text-xl font-black text-slate-800 truncate mb-1 relative z-10">{file.isoMetadata?.title || file.name}</h3>
                   <p className="text-[10px] text-indigo-500 font-black tracking-widest uppercase mb-4 relative z-10">{file.isoMetadata?.recordId}</p>
+                  
+                  {file.isoMetadata?.status === ArchiveStatus.ERROR && !file.isProcessing && (
+                    <div className="flex flex-col gap-2">
+                      <p className="text-[10px] font-bold text-rose-500 line-clamp-2">{file.isoMetadata?.executiveSummary}</p>
+                      <button 
+                        onClick={(e) => { e.stopPropagation(); handleRetryAnalysis(file.id); }}
+                        className="flex items-center gap-2 text-xs font-black text-rose-600 hover:text-rose-700 transition-colors bg-rose-100/50 w-fit px-3 py-1.5 rounded-lg"
+                      >
+                        <RotateCcw size={14} /> إعادة المحاولة
+                      </button>
+                    </div>
+                  )}
                 </div>
               ))}
             </div>
@@ -773,6 +1157,13 @@ const App: React.FC = () => {
                                 <p className="text-[10px] text-slate-400 mt-2">يتم التحقق عند الطلب</p>
                             </div>
                         </div>
+                        <div className="mt-4 bg-indigo-50 p-4 rounded-2xl border border-indigo-100 flex items-center justify-between">
+                            <div>
+                                <p className="text-xs font-bold text-indigo-400 uppercase">معرف النسخة (Instance ID)</p>
+                                <p className="text-lg font-black text-indigo-900 font-mono tracking-wider">{localStorage.getItem('instance_id') || 'Loading...'}</p>
+                            </div>
+                            <div className="text-indigo-300"><Server size={24} /></div>
+                        </div>
                     </section>
 
                     <section>
@@ -788,7 +1179,13 @@ const App: React.FC = () => {
                 )}
                 {settingsTab === 'telegram' && (
                   <div className="space-y-8 animate-in fade-in">
-                    <h3 className="text-2xl font-black mb-6 flex items-center gap-3 text-slate-800"><TelegramIcon size={24} className="text-blue-500" /> إعدادات الربط</h3>
+                    <div className="flex justify-between items-center mb-6">
+                        <h3 className="text-2xl font-black flex items-center gap-3 text-slate-800"><TelegramIcon size={24} className="text-blue-500" /> إعدادات الربط</h3>
+                        <div className="flex items-center gap-2 bg-slate-100 px-3 py-1.5 rounded-full border">
+                            <div className={`w-2 h-2 rounded-full ${integrations.telegram.config.botToken ? 'bg-emerald-500 animate-pulse' : 'bg-slate-300'}`}></div>
+                            <span className="text-[10px] font-black text-slate-500 uppercase">{integrations.telegram.config.botToken ? 'Polling Active' : 'Polling Inactive'}</span>
+                        </div>
+                    </div>
                     <div className="space-y-6 max-w-lg">
                       <div className="space-y-2">
                         <label className="text-xs font-black block text-slate-500 uppercase mr-1">Bot Token</label>
@@ -988,11 +1385,15 @@ const App: React.FC = () => {
                       { label: 'رقم القيد', value: files.find(f => f.id === selectedFileId)?.isoMetadata?.incomingNumber, highlight: true },
                       { label: 'تاريخ الوثيقة', value: files.find(f => f.id === selectedFileId)?.isoMetadata?.fullDate },
                       { label: 'الأهمية', value: files.find(f => f.id === selectedFileId)?.isoMetadata?.importance },
-                      { label: 'الحالة', value: files.find(f => f.id === selectedFileId)?.isoMetadata?.status, status: true }
+                      { label: 'الحالة', value: files.find(f => f.id === selectedFileId)?.isoMetadata?.status, status: true },
+                      { label: 'رقم الوارد الخارجي', value: files.find(f => f.id === selectedFileId)?.isoMetadata?.externalInboundNumber },
+                      { label: 'المشفوعات', value: files.find(f => f.id === selectedFileId)?.isoMetadata?.attachments },
+                      { label: 'الموقع (صاحب الصلاحية)', value: files.find(f => f.id === selectedFileId)?.isoMetadata?.signatory },
+                      { label: 'مراجع مرتبطة', value: files.find(f => f.id === selectedFileId)?.isoMetadata?.relatedReferences?.join(', ') }
                     ].map((item, idx) => (
                       <div key={idx} className="p-6 bg-slate-50 rounded-2xl border flex justify-between items-center shadow-sm">
                         <span className="text-[10px] text-slate-400 font-black uppercase tracking-wider">{item.label}</span>
-                        <span className={`font-black text-sm ${item.highlight ? 'text-indigo-600 font-mono' : item.status ? 'text-emerald-600' : 'text-slate-700'}`}>{item.value || "-"}</span>
+                        <span className={`font-black text-sm text-left max-w-[60%] truncate ${item.highlight ? 'text-indigo-600 font-mono' : item.status ? 'text-emerald-600' : 'text-slate-700'}`} title={item.value || "-"}>{item.value || "-"}</span>
                       </div>
                     ))}
                  </div>

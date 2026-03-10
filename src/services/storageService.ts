@@ -1,8 +1,9 @@
-import { FileRecord } from '../types';
+import { FileRecord } from '../../types';
 
 const DB_NAME = 'ArshifProDB';
 const STORE_NAME = 'files';
-const DB_VERSION = 1;
+const SETTINGS_STORE = 'settings';
+const DB_VERSION = 2;
 
 export const openDB = (): Promise<IDBDatabase> => {
   return new Promise((resolve, reject) => {
@@ -11,6 +12,9 @@ export const openDB = (): Promise<IDBDatabase> => {
       const db = (event.target as IDBOpenDBRequest).result;
       if (!db.objectStoreNames.contains(STORE_NAME)) {
         db.createObjectStore(STORE_NAME, { keyPath: 'id' });
+      }
+      if (!db.objectStoreNames.contains(SETTINGS_STORE)) {
+        db.createObjectStore(SETTINGS_STORE, { keyPath: 'key' });
       }
     };
     request.onsuccess = () => resolve(request.result);
@@ -61,10 +65,32 @@ export const getAllFilesFromDB = async (): Promise<any[]> => {
 export const clearDB = async () => {
     const db = await openDB();
     return new Promise((resolve, reject) => {
-        const tx = db.transaction(STORE_NAME, 'readwrite');
-        const store = tx.objectStore(STORE_NAME);
-        const request = store.clear();
+        const tx = db.transaction([STORE_NAME, SETTINGS_STORE], 'readwrite');
+        tx.objectStore(STORE_NAME).clear();
+        tx.objectStore(SETTINGS_STORE).clear();
+        tx.oncomplete = () => resolve(true);
+        tx.onerror = () => reject(tx.error);
+    });
+};
+
+export const saveDirectoryHandle = async (handle: any) => {
+    const db = await openDB();
+    return new Promise((resolve, reject) => {
+        const tx = db.transaction(SETTINGS_STORE, 'readwrite');
+        const store = tx.objectStore(SETTINGS_STORE);
+        const request = store.put({ key: 'syncDirectoryHandle', handle });
         request.onsuccess = () => resolve(true);
+        request.onerror = () => reject(request.error);
+    });
+};
+
+export const getDirectoryHandle = async (): Promise<any> => {
+    const db = await openDB();
+    return new Promise((resolve, reject) => {
+        const tx = db.transaction(SETTINGS_STORE, 'readonly');
+        const store = tx.objectStore(SETTINGS_STORE);
+        const request = store.get('syncDirectoryHandle');
+        request.onsuccess = () => resolve(request.result?.handle || null);
         request.onerror = () => reject(request.error);
     });
 };
