@@ -3,9 +3,19 @@ import { GoogleGenAI, Type, HarmCategory, HarmBlockThreshold, FunctionDeclaratio
 import { ArchiveStatus, ISOMetadata, DocumentType, FileRecord } from "../types";
 import { getFileFromDB } from "../src/services/storageService";
 
-// Helper to safely access API Key without crashing if process is undefined
+// Helper to safely access API Key from multiple sources
 const getApiKey = (): string => {
   try {
+    // First, try localStorage (user-provided key)
+    if (typeof window !== 'undefined') {
+      const storedKey = localStorage.getItem('GEMINI_API_KEY');
+      if (storedKey && storedKey.length > 0) {
+        console.log("API Key found in localStorage (length):", storedKey.length);
+        return storedKey;
+      }
+    }
+    
+    // Fallback to environment variables
     // @ts-ignore
     const key = process.env.GEMINI_API_KEY || process.env.API_KEY || "";
     if (!key) {
@@ -18,6 +28,21 @@ const getApiKey = (): string => {
     console.error("API Key Access Error:", e);
     return "";
   }
+};
+
+// Function to set API Key in localStorage
+export const setApiKey = (key: string): void => {
+  try {
+    localStorage.setItem('GEMINI_API_KEY', key);
+    console.log("API Key saved successfully");
+  } catch (e) {
+    console.error("Failed to save API Key:", e);
+  }
+};
+
+// Function to check if API Key is configured
+export const hasApiKey = (): boolean => {
+  return getApiKey().length > 0;
 };
 
 export const APP_VERSION = "1.2.0";

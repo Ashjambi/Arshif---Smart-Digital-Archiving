@@ -22,7 +22,7 @@ import {
   FileRecord, ArchiveStatus, AuditAction, AuditLog, ChatMessage, DocumentType, Importance, Confidentiality, ISOMetadata
 } from '../types';
 import { NAV_ITEMS, STATUS_COLORS } from '../constants';
-import { askAgent, askAgentStream, analyzeSpecificFile, APP_VERSION } from '../services/geminiService';
+import { askAgent, askAgentStream, analyzeSpecificFile, APP_VERSION, setApiKey, hasApiKey } from '../services/geminiService';
 import { TelegramService } from '../services/telegramService';
 import { saveFileToDB, getFileFromDB, getAllFilesFromDB, clearDB, saveDirectoryHandle, getDirectoryHandle } from './services/storageService';
 
@@ -48,6 +48,15 @@ const App: React.FC = () => {
   const [currentScanningFile, setCurrentScanningFile] = useState('');
   const [isVerifying, setIsVerifying] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
+  const [apiKey, setApiKeyState] = useState('');
+  const [isApiKeySet, setIsApiKeySet] = useState(false);
+
+  // Function to set API Key
+  const handleSetApiKey = (key: string) => {
+    setApiKeyState(key);
+    localStorage.setItem('GEMINI_API_KEY', key);
+    setIsApiKeySet(true);
+  };
 
   const [integrations, setIntegrations] = useState({
     telegram: {
@@ -79,6 +88,14 @@ const App: React.FC = () => {
   useEffect(() => {
     if (!localStorage.getItem('instance_id')) {
         localStorage.setItem('instance_id', `NODE-${Math.random().toString(36).substr(2, 6).toUpperCase()}`);
+    }
+  }, []);
+
+  // Check if API Key is set
+  useEffect(() => {
+    const storedKey = localStorage.getItem('GEMINI_API_KEY');
+    if (storedKey && storedKey.length > 0) {
+      setIsApiKeySet(true);
     }
   }, []);
 
@@ -1133,6 +1150,7 @@ const App: React.FC = () => {
             <div className="bg-white rounded-[3rem] border shadow-xl flex min-h-[500px] overflow-hidden">
               <aside className="w-64 bg-slate-50 border-l p-8 space-y-2">
                 <button onClick={() => setSettingsTab('general')} className={`w-full text-right px-6 py-4 rounded-2xl font-bold transition-all ${settingsTab === 'general' ? 'bg-white text-indigo-600 shadow-md' : 'text-slate-500 hover:bg-slate-100'}`}>الإدارة العامة</button>
+                <button onClick={() => setSettingsTab('api')} className={`w-full text-right px-6 py-4 rounded-2xl font-bold transition-all ${settingsTab === 'api' ? 'bg-white text-indigo-600 shadow-md' : 'text-slate-500 hover:bg-slate-100'}`}>مفتاح Gemini API</button>
                 <button onClick={() => setSettingsTab('telegram')} className={`w-full text-right px-6 py-4 rounded-2xl font-bold transition-all ${settingsTab === 'telegram' ? 'bg-white text-indigo-600 shadow-md' : 'text-slate-500 hover:bg-slate-100'}`}>تكامل تليجرام</button>
               </aside>
               <div className="flex-1 p-12">
@@ -1177,6 +1195,63 @@ const App: React.FC = () => {
                         </button>
                       </div>
                     </section>
+                  </div>
+                )}
+                {settingsTab === 'api' && (
+                  <div className="space-y-8 animate-in fade-in">
+                    <div className="flex justify-between items-center mb-6">
+                        <h3 className="text-2xl font-black flex items-center gap-3 text-slate-800"><Key size={24} className="text-indigo-500" /> مفتاح Gemini API</h3>
+                        <div className="flex items-center gap-2 bg-slate-100 px-3 py-1.5 rounded-full border">
+                            <div className={`w-2 h-2 rounded-full ${isApiKeySet ? 'bg-emerald-500 animate-pulse' : 'bg-rose-500'}`}></div>
+                            <span className="text-[10px] font-black text-slate-500 uppercase">{isApiKeySet ? 'تم الإعداد' : 'غير مُعد'}</span>
+                        </div>
+                    </div>
+                    
+                    <div className="bg-indigo-50 p-6 rounded-[2rem] border border-indigo-100">
+                      <p className="text-sm text-indigo-700 font-bold mb-4">
+                        ℹ️ للتشغيل على Cloudflare Pages، يرجى إدخال مفتاح Gemini API الخاص بك. 
+                        يمكنك الحصول عليه من <a href="https://aistudio.google.com/apikey" target="_blank" className="text-indigo-600 underline">Google AI Studio</a>
+                      </p>
+                    </div>
+
+                    <div className="space-y-6 max-w-lg">
+                      <div className="space-y-2">
+                        <label className="text-xs font-black block text-slate-500 uppercase mr-1">مفتاح API</label>
+                        <input 
+                          type="password" 
+                          placeholder="AIza..." 
+                          className="w-full p-4 bg-slate-50 rounded-2xl outline-none font-mono text-xs border border-slate-200 focus:border-indigo-500 shadow-sm" 
+                          value={apiKey} 
+                          onChange={e => setApiKeyState(e.target.value)} 
+                        />
+                      </div>
+                      <button 
+                        onClick={() => {
+                          if (apiKey.trim().length < 10) {
+                            alert("يرجى إدخال مفتاح API صالح");
+                            return;
+                          }
+                          handleSetApiKey(apiKey.trim());
+                          alert("✅ تم حفظ مفتاح API بنجاح!");
+                        }}
+                        className="w-full bg-indigo-600 text-white p-5 rounded-2xl font-black flex items-center justify-center gap-3 hover:bg-indigo-700 transition-all shadow-xl"
+                      >
+                        <Save size={20} /> حفظ المفتاح
+                      </button>
+                      {isApiKeySet && (
+                        <button 
+                          onClick={() => {
+                            localStorage.removeItem('GEMINI_API_KEY');
+                            setIsApiKeySet(false);
+                            setApiKeyState('');
+                            alert("تم حذف المفتاح");
+                          }}
+                          className="w-full bg-rose-100 text-rose-600 p-4 rounded-2xl font-bold flex items-center justify-center gap-3 hover:bg-rose-200 transition-all"
+                        >
+                          <Trash2 size={18} /> حذف المفتاح
+                        </button>
+                      )}
+                    </div>
                   </div>
                 )}
                 {settingsTab === 'telegram' && (
