@@ -240,7 +240,8 @@ const App: React.FC = () => {
   };
 
   const sendToTelegram = async (text: string) => {
-    const { botToken, adminChatId, connected } = integrationsRef.current.telegram;
+    const { config, connected } = integrationsRef.current.telegram;
+    const { botToken, adminChatId } = config;
     if (!connected || !botToken || !adminChatId) return;
     try {
       await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
@@ -253,7 +254,8 @@ const App: React.FC = () => {
   };
 
   const sendFileToTelegram = async (file: FileRecord) => {
-    const { botToken, adminChatId, connected } = integrationsRef.current.telegram;
+    const { config, connected } = integrationsRef.current.telegram;
+    const { botToken, adminChatId } = config;
     if (!connected || !file.originalFile || !botToken) return false;
     const fd = new FormData();
     fd.append('chat_id', adminChatId);

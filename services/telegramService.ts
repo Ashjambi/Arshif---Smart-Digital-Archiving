@@ -25,7 +25,7 @@ export class TelegramService {
   private config: TelegramConfig;
   private lastUpdateId: number = 0;
   private isPolling: boolean = false;
-  private onMessageCallback: ((text: string, chatId: string) => Promise<string>) | null = null;
+  public onMessageCallback: ((text: string, chatId: string) => Promise<string>) | null = null;
   private onLogCallback: ((log: string) => void) | null = null;
   private chatHistory: Map<string, {role: string, text: string}[]> = new Map();
 
@@ -67,7 +67,7 @@ export class TelegramService {
     this.onLogCallback = callback;
   }
 
-  private log(message: string) {
+  public log(message: string) {
     if (this.onLogCallback) this.onLogCallback(message);
     console.log(`[Telegram] ${message}`);
   }

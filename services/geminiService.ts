@@ -327,7 +327,7 @@ export const askAgent = async (query: string, archiveContext: string, chatHistor
   
   const systemInstruction = getSystemInstruction(archiveContext);
 
-  const formattedHistory: {role: string, parts: {text: string}[]}[] = [];
+  const formattedHistory: any[] = [];
   let lastRole = '';
   for (const msg of chatHistory) {
     const role = msg.role === 'assistant' ? 'model' : 'user';
@@ -405,7 +405,7 @@ export const askAgent = async (query: string, archiveContext: string, chatHistor
     if ((errorMsg.includes('503') || errorMsg.includes('429') || errorMsg.includes('502') || errorMsg.includes('Bad Gateway') || errorMsg.includes('<html>')) && retries > 0) {
         console.log(`Gemini 3 Flash busy or error (${errorMsg.substring(0, 50)}...), retrying... (${retries} left)`);
         await new Promise(r => setTimeout(r, 2000));
-        return askAgent(query, archiveContext, chatHistory, retries - 1);
+        return askAgent(query, archiveContext, chatHistory, files, retries - 1);
     }
     
     // Fallback to Gemini 2.5 Flash if Gemini 3 is unavailable after retries
@@ -435,7 +435,7 @@ export async function* askAgentStream(query: string, archiveContext: string, cha
   
   const systemInstruction = getSystemInstruction(archiveContext);
 
-  const formattedHistory: {role: string, parts: {text: string}[]}[] = [];
+  const formattedHistory: any[] = [];
   let lastRole = '';
   for (const msg of chatHistory) {
     const role = msg.role === 'assistant' ? 'model' : 'user';
