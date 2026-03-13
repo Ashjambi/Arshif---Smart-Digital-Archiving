@@ -22,7 +22,7 @@ import {
   FileRecord, ArchiveStatus, AuditAction, AuditLog, ChatMessage, DocumentType, Importance, Confidentiality, ISOMetadata
 } from '../types';
 import { NAV_ITEMS, STATUS_COLORS } from '../constants';
-import { askAgent, askAgentStream, analyzeSpecificFile, APP_VERSION } from './services/ziAiService';
+import { askAgent, askAgentStream, analyzeSpecificFile, APP_VERSION } from '../services/geminiService';
 import { TelegramService } from '../services/telegramService';
 import { saveFileToDB, getFileFromDB, getAllFilesFromDB, clearDB, saveDirectoryHandle, getDirectoryHandle } from './services/storageService';
 
@@ -240,8 +240,7 @@ const App: React.FC = () => {
   };
 
   const sendToTelegram = async (text: string) => {
-    const { config, connected } = integrationsRef.current.telegram;
-    const { botToken, adminChatId } = config;
+    const { botToken, adminChatId, connected } = integrationsRef.current.telegram;
     if (!connected || !botToken || !adminChatId) return;
     try {
       await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
@@ -254,8 +253,7 @@ const App: React.FC = () => {
   };
 
   const sendFileToTelegram = async (file: FileRecord) => {
-    const { config, connected } = integrationsRef.current.telegram;
-    const { botToken, adminChatId } = config;
+    const { botToken, adminChatId, connected } = integrationsRef.current.telegram;
     if (!connected || !file.originalFile || !botToken) return false;
     const fd = new FormData();
     fd.append('chat_id', adminChatId);

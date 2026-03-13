@@ -3,19 +3,9 @@ import { GoogleGenAI, Type, HarmCategory, HarmBlockThreshold, FunctionDeclaratio
 import { ArchiveStatus, ISOMetadata, DocumentType, FileRecord } from "../types";
 import { getFileFromDB } from "../src/services/storageService";
 
-// Helper to safely access API Key from multiple sources
+// Helper to safely access API Key without crashing if process is undefined
 const getApiKey = (): string => {
   try {
-    // First, try localStorage (user-provided key)
-    if (typeof window !== 'undefined') {
-      const storedKey = localStorage.getItem('GEMINI_API_KEY');
-      if (storedKey && storedKey.length > 0) {
-        console.log("API Key found in localStorage (length):", storedKey.length);
-        return storedKey;
-      }
-    }
-    
-    // Fallback to environment variables
     // @ts-ignore
     const key = process.env.GEMINI_API_KEY || process.env.API_KEY || "";
     if (!key) {
@@ -28,21 +18,6 @@ const getApiKey = (): string => {
     console.error("API Key Access Error:", e);
     return "";
   }
-};
-
-// Function to set API Key in localStorage
-export const setApiKey = (key: string): void => {
-  try {
-    localStorage.setItem('GEMINI_API_KEY', key);
-    console.log("API Key saved successfully");
-  } catch (e) {
-    console.error("Failed to save API Key:", e);
-  }
-};
-
-// Function to check if API Key is configured
-export const hasApiKey = (): boolean => {
-  return getApiKey().length > 0;
 };
 
 export const APP_VERSION = "1.2.0";
@@ -352,7 +327,7 @@ export const askAgent = async (query: string, archiveContext: string, chatHistor
   
   const systemInstruction = getSystemInstruction(archiveContext);
 
-  const formattedHistory: any[] = [];
+  const formattedHistory: {role: string, parts: {text: string}[]}[] = [];
   let lastRole = '';
   for (const msg of chatHistory) {
     const role = msg.role === 'assistant' ? 'model' : 'user';
@@ -430,7 +405,7 @@ export const askAgent = async (query: string, archiveContext: string, chatHistor
     if ((errorMsg.includes('503') || errorMsg.includes('429') || errorMsg.includes('502') || errorMsg.includes('Bad Gateway') || errorMsg.includes('<html>')) && retries > 0) {
         console.log(`Gemini 3 Flash busy or error (${errorMsg.substring(0, 50)}...), retrying... (${retries} left)`);
         await new Promise(r => setTimeout(r, 2000));
-        return askAgent(query, archiveContext, chatHistory, files, retries - 1);
+        return askAgent(query, archiveContext, chatHistory, retries - 1);
     }
     
     // Fallback to Gemini 2.5 Flash if Gemini 3 is unavailable after retries
@@ -460,7 +435,7 @@ export async function* askAgentStream(query: string, archiveContext: string, cha
   
   const systemInstruction = getSystemInstruction(archiveContext);
 
-  const formattedHistory: any[] = [];
+  const formattedHistory: {role: string, parts: {text: string}[]}[] = [];
   let lastRole = '';
   for (const msg of chatHistory) {
     const role = msg.role === 'assistant' ? 'model' : 'user';
